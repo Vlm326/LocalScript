@@ -13,7 +13,6 @@ pub fn start_lua_sandbox(tx: mpsc::Sender<String>) -> mlua::Result<Lua> {
     let lua = Lua::new();
 
     lua.set_memory_limit(8 * 1024 * 1024)?;
-
     let globals = lua.globals();
     globals.set("os", Value::Nil)?;
     globals.set("io", Value::Nil)?;
@@ -59,7 +58,7 @@ pub async fn execute_lua_code(code: String, timeout_secs: u64) -> Result<Executi
 
         lua.set_hook(
             HookTriggers {
-                every_nth_instruction: Some(1_000),
+                every_nth_instruction: Some(10_000),
                 ..Default::default()
             },
             move |_, _debug| {
