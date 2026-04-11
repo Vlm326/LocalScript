@@ -1,5 +1,5 @@
-use thiserror::Error;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Stage {
@@ -45,6 +45,7 @@ impl AppError {
         }
     }
 
+    #[allow(unused)]
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::Internal {
             message: msg.into(),
