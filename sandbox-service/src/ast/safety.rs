@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::LazyLock;
+
 const DANGEROUS_TEXT_PATTERNS: [&str; 10] = [
     "rm -rf",
     "rm -fr",
@@ -27,6 +30,10 @@ pub fn find_dangerous_text_patterns(code: &str) -> Option<Vec<String>> {
         Some(matches)
     }
 }
+
+static FORBIDDEN_SET: LazyLock<HashSet<&str>> = LazyLock::new(|| {
+    FORBIDDEN_AST_CALLS.iter().copied().collect()
+});
 
 const FORBIDDEN_AST_CALLS: [&str; 34] = [
     // OS operations
@@ -77,8 +84,8 @@ pub fn find_forbidden_ast_calls(calls: &[String]) -> Option<Vec<String>> {
     let mut matches = Vec::new();
 
     for call in calls {
-        // Точное совпадение
-        if FORBIDDEN_AST_CALLS.contains(&call.as_str()) {
+        // Точное совпадение — O(1) через HashSet
+        if FORBIDDEN_SET.contains(call.as_str()) {
             matches.push(format!("forbidden function call found: {call}"));
             continue;
         }
