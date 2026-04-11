@@ -1,15 +1,14 @@
-use std::fs::read_to_string;
 use thiserror::Error;
+use serde::{Deserialize, Serialize};
 
-/// Стадия выполнения (типобезопасно, без строк)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Stage {
     Parsing,
     Execution,
     SafetyCheck,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Deserialize, Serialize)]
 pub enum AppError {
     #[error("Parse error at {stage:?}: {message}")]
     Parse { message: String, stage: Stage },

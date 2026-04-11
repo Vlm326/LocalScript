@@ -3,27 +3,20 @@ use axum::Json;
 use crate::ast::extractor::extract_function_calls;
 use crate::ast::parser::{parse_lua_code, recursive_ast_walk};
 use crate::ast::safety::{find_dangerous_text_patterns, find_forbidden_ast_calls};
+use crate::error::AppError;
 use crate::executor::sandbox::execute_lua_code;
-use crate::models::{PipelineRequest, PipelineResponse};
+use crate::models::{PipelineRequest, PipelineResponse, PipelineStatus};
 
 pub fn construct_pipeline_response(
-    ok: bool,
-    syntax_ok: bool,
-    safety_ok: bool,
-    runtime_ok: bool,
-    stage: &str,
-    error: Option<String>,
+    status: PipelineStatus,
     output: Option<String>,
+    logs: Vec<String>,
     warnings: Vec<String>,
 ) -> PipelineResponse {
     PipelineResponse {
-        ok,
-        syntax_ok,
-        safety_ok,
-        runtime_ok,
-        stage: stage.to_string(),
-        error,
+        status,
         output,
+        logs,
         warnings,
     }
 }
@@ -42,13 +35,11 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
 
     if payload.code.trim().is_empty() {
         return Json(construct_pipeline_response(
-            false,
-            false,
-            false,
-            false,
-            "parse",
-            Some("code is empty".to_string()),
+            PipelineStatus::SyntaxError {
+                error: AppError::parse("code is empty"),
+            },
             None,
+            Vec::new(),
             warnings,
         ));
     }
@@ -57,13 +48,11 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
         Ok(tree) => tree,
         Err(error) => {
             return Json(construct_pipeline_response(
-                false,
-                false,
-                false,
-                false,
-                "parse",
-                Some(error),
+                PipelineStatus::SyntaxError {
+                    error: AppError::parse(error),
+                },
                 None,
+                Vec::new(),
                 warnings,
             ));
         }
@@ -73,27 +62,25 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
     recursive_ast_walk(tree.root_node(), &mut ast_errors);
 
     if !ast_errors.is_empty() {
+        let error_message = ast_errors.join(", ");
         return Json(construct_pipeline_response(
-            false,
-            false,
-            false,
-            false,
-            "parse",
-            Some(ast_errors.join(", ")),
+            PipelineStatus::SyntaxError {
+                error: AppError::parse(error_message),
+            },
             None,
+            Vec::new(),
             warnings,
         ));
     }
 
     if let Some(matches) = find_dangerous_text_patterns(&payload.code) {
+        let error_message = matches.join(", ");
         return Json(construct_pipeline_response(
-            false,
-            true,
-            false,
-            false,
-            "safety",
-            Some(matches.join(", ")),
+            PipelineStatus::SafetyError {
+                error: AppError::safety(error_message),
+            },
             None,
+            Vec::new(),
             warnings,
         ));
     }
@@ -101,14 +88,13 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
     let calls = extract_function_calls(&tree, &payload.code);
 
     if let Some(matches) = find_forbidden_ast_calls(&calls) {
+        let error_message = matches.join(", ");
         return Json(construct_pipeline_response(
-            false,
-            true,
-            false,
-            false,
-            "safety",
-            Some(matches.join(", ")),
+            PipelineStatus::SafetyError {
+                error: AppError::safety(error_message),
+            },
             None,
+            Vec::new(),
             warnings,
         ));
     }
@@ -116,37 +102,46 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
     if !should_execute {
         warnings.push("runtime execution skipped".to_string());
         return Json(construct_pipeline_response(
-            true,
-            true,
-            true,
-            true,
-            "completed",
+            PipelineStatus::Ok,
             None,
-            None,
+            Vec::new(),
             warnings,
         ));
     }
 
-    match execute_lua_code(payload.code, timeout_secs).await {
-        Ok(output) => Json(construct_pipeline_response(
-            true,
-            true,
-            true,
-            true,
-            "completed",
+    let result = execute_lua_code(payload.code, timeout_secs).await;
+    let result = result.unwrap_or_else(|error| crate::executor::sandbox::ExecutionResult {
+        output: None,
+        logs: vec![format!("[fatal] {error}")],
+    });
+
+    let has_runtime_errors = result
+        .logs
+        .iter()
+        .any(|l| l.starts_with("[error]") || l.starts_with("[fatal]"));
+
+    if has_runtime_errors {
+        let error_msg = result
+            .logs
+            .iter()
+            .find(|l| l.starts_with("[error]") || l.starts_with("[fatal]"))
+            .cloned()
+            .unwrap_or_else(|| "unknown runtime error".to_string());
+
+        return Json(construct_pipeline_response(
+            PipelineStatus::RuntimeError {
+                error: AppError::runtime(&error_msg),
+            },
             None,
-            output,
+            result.logs,
             warnings,
-        )),
-        Err(error) => Json(construct_pipeline_response(
-            false,
-            true,
-            true,
-            false,
-            "runtime",
-            Some(error),
-            None,
-            warnings,
-        )),
+        ));
     }
+
+    Json(construct_pipeline_response(
+        PipelineStatus::Ok,
+        result.output,
+        result.logs,
+        warnings,
+    ))
 }
