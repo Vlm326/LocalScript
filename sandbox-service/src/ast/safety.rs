@@ -31,10 +31,6 @@ pub fn find_dangerous_text_patterns(code: &str) -> Option<Vec<String>> {
     }
 }
 
-static FORBIDDEN_SET: LazyLock<HashSet<&str>> = LazyLock::new(|| {
-    FORBIDDEN_AST_CALLS.iter().copied().collect()
-});
-
 const FORBIDDEN_AST_CALLS: [&str; 34] = [
     // OS operations
     "os.execute",
@@ -79,6 +75,9 @@ const FORBIDDEN_AST_CALLS: [&str; 34] = [
     "debug.getinfo",
     "coroutine.wrap", // может использоваться для обхода hook
 ];
+
+static FORBIDDEN_SET: LazyLock<HashSet<&str>> =
+    LazyLock::new(|| FORBIDDEN_AST_CALLS.iter().copied().collect());
 
 pub fn find_forbidden_ast_calls(calls: &[String]) -> Option<Vec<String>> {
     let mut matches = Vec::new();
