@@ -109,11 +109,19 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
         ));
     }
 
-    let result = execute_lua_code(payload.code, timeout_secs).await;
-    let result = result.unwrap_or_else(|error| crate::executor::sandbox::ExecutionResult {
-        output: None,
-        logs: vec![format!("[fatal] {error}")],
-    });
+    let result = match execute_lua_code(payload.code, timeout_secs).await {
+        Ok(result) => result,
+        Err(error) => {
+            return Json(construct_pipeline_response(
+                PipelineStatus::RuntimeError {
+                    error: AppError::runtime(&error),
+                },
+                None,
+                vec![format!("[fatal] {error}")],
+                warnings,
+            ));
+        }
+    };
 
     let has_runtime_errors = result
         .logs
