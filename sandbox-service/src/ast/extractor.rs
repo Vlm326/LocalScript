@@ -32,6 +32,13 @@ fn extract_callable_name(node: Node, source: &str) -> Option<String> {
             let field_name = node_text(field, source)?;
             Some(format!("{table_name}.{field_name}"))
         }
+        "bracket_index_expression" => {
+            let table = node.child_by_field_name("table")?;
+            let field = node.child_by_field_name("field")?;
+            let table_name = extract_callable_name(table, source)?;
+            let field_name = node_text(field, source)?;
+            Some(format!("{table_name}[{field_name}]"))
+        }
         "method_index_expression" => {
             let table = node.child_by_field_name("table")?;
             let method = node.child_by_field_name("method")?;

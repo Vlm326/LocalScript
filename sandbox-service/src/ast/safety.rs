@@ -28,22 +28,65 @@ pub fn find_dangerous_text_patterns(code: &str) -> Option<Vec<String>> {
     }
 }
 
-const FORBIDDEN_AST_CALLS: [&str; 7] = [
+const FORBIDDEN_AST_CALLS: [&str; 26] = [
+    // OS operations
     "os.execute",
+    "os.remove",
+    "os.rename",
+    "os.tmpname",
+    "os.exit",
+    // I/O operations
     "io.open",
     "io.popen",
+    "io.input",
+    "io.output",
+    "io.close",
+    // Dynamic loading
     "require",
     "dofile",
     "loadfile",
+    "load",
+    "loadstring",
     "package.loadlib",
+    // Debug & metatable bypass
+    "debug",
+    "setmetatable",
+    "getmetatable",
+    "getfenv",
+    "setfenv",
+    "rawget",
+    "rawset",
+    "rawequal",
+    // Global environment access
+    "_G",
+    "_ENV",
 ];
 
 pub fn find_forbidden_ast_calls(calls: &[String]) -> Option<Vec<String>> {
     let mut matches = Vec::new();
 
     for call in calls {
+        // Точное совпадение
         if FORBIDDEN_AST_CALLS.contains(&call.as_str()) {
             matches.push(format!("forbidden function call found: {call}"));
+            continue;
+        }
+
+        // Частичное совпадение: проверка префиксов (os.execute, os["execute"] и т.д.)
+        for forbidden in &FORBIDDEN_AST_CALLS {
+            // Проверяем dot notation: os.execute, io.open
+            if call.starts_with(&format!("{forbidden}."))
+                || call.starts_with(&format!("{forbidden}:"))
+            {
+                matches.push(format!("forbidden access via dot/method: {call}"));
+                break;
+            }
+
+            // Проверяем bracket notation: os["execute"], io["open"]
+            if call.starts_with(&format!("{forbidden}[")) {
+                matches.push(format!("forbidden access via bracket notation: {call}"));
+                break;
+            }
         }
     }
 
