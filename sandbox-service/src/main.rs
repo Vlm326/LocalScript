@@ -1,5 +1,8 @@
 use axum::{Router, routing::post};
 use std::net::SocketAddr;
+use tower_http::trace::TraceLayer;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 mod ast;
 mod error;
@@ -9,12 +12,26 @@ mod routes;
 
 #[tokio::main]
 async fn main() {
-    let app = Router::new().route("/pipeline", post(routes::pipeline::handle_pipeline));
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let app = Router::new()
+        .route("/pipeline", post(routes::pipeline::handle_pipeline))
+        .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 6778));
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("Failed to bind to address {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
 
-    println!("sandbox-service listening on {}", addr);
+    info!("sandbox-service listening on {}", addr);
 
     axum::serve(listener, app).await.unwrap();
 }
