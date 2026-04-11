@@ -1,16 +1,20 @@
+use std::sync::{LazyLock, Mutex};
 use tree_sitter::{Node, Parser};
 use tree_sitter_lua::LANGUAGE;
 
-pub fn parse_lua_code(code: &str) -> Result<tree_sitter::Tree, String> {
+static LUA_PARSER: LazyLock<Mutex<Parser>> = LazyLock::new(|| {
     let mut parser = Parser::new();
     parser
         .set_language(&LANGUAGE.into())
-        .map_err(|e| e.to_string())?;
+        .expect("Failed to set Lua language");
+    Mutex::new(parser)
+});
 
+pub fn parse_lua_code(code: &str) -> Result<tree_sitter::Tree, String> {
+    let mut parser = LUA_PARSER.lock().map_err(|e| e.to_string())?;
     let tree = parser.parse(code, None).ok_or("Failed to parse code")?;
-    let root_node = tree.root_node();
 
-    if root_node.has_error() {
+    if tree.root_node().has_error() {
         return Err("Syntax error in code, can't parse AST".to_string());
     }
 

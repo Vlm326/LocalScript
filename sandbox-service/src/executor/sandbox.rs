@@ -19,6 +19,7 @@ pub fn start_lua_sandbox(tx: mpsc::Sender<String>) -> mlua::Result<Lua> {
     globals.set("io", Value::Nil)?;
     globals.set("package", Value::Nil)?;
     globals.set("debug", Value::Nil)?;
+    globals.set("coroutine", Value::Nil)?;
 
     let tx_print = tx.clone();
     let print_fn = lua.create_function(move |_, args: MultiValue| {

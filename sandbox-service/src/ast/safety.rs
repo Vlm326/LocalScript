@@ -28,7 +28,7 @@ pub fn find_dangerous_text_patterns(code: &str) -> Option<Vec<String>> {
     }
 }
 
-const FORBIDDEN_AST_CALLS: [&str; 26] = [
+const FORBIDDEN_AST_CALLS: [&str; 34] = [
     // OS operations
     "os.execute",
     "os.remove",
@@ -60,6 +60,17 @@ const FORBIDDEN_AST_CALLS: [&str; 26] = [
     // Global environment access
     "_G",
     "_ENV",
+    // Попытки обойти sandbox через строки
+    "load(", // load("os.execute...")
+    "loadstring(",
+    "dostring(",
+    // Обфускация через char codes
+    "string.char(", // string.char(111,115) = "os"
+    "string.byte(",
+    // Попытка достать глобальное окружение
+    "getfenv(0)", // Lua 5.1 root env
+    "debug.getinfo",
+    "coroutine.wrap", // может использоваться для обхода hook
 ];
 
 pub fn find_forbidden_ast_calls(calls: &[String]) -> Option<Vec<String>> {
