@@ -1,16 +1,17 @@
-use axum::{routing::post, Router};
+use axum::{Router, routing::post};
 use std::net::SocketAddr;
 
+mod ast;
+mod error;
+mod executor;
 mod models;
 mod routes;
-mod ast; 
-
 
 #[tokio::main]
 async fn main() {
     let app = Router::new().route("/pipeline", post(routes::pipeline::handle_pipeline));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
     println!("sandbox-service listening on {}", addr);
