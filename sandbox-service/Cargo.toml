@@ -12,5 +12,6 @@ thiserror = "2"
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 tree-sitter = "0.25"
 tree-sitter-lua = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
