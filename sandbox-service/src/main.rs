@@ -1,4 +1,4 @@
-use axum::{Router, routing::post, routing::get};
+use axum::{Router, routing::get, routing::post};
 use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
 use tracing::info;
