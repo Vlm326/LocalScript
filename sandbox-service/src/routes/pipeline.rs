@@ -3,21 +3,38 @@ use axum::Json;
 use crate::ast::extractor::extract_function_calls;
 use crate::ast::parser::{parse_lua_code, recursive_ast_walk};
 use crate::ast::safety::{find_dangerous_text_patterns, find_forbidden_ast_calls};
-use crate::error::AppError;
 use crate::executor::sandbox::execute_lua_code;
-use crate::models::{PipelineRequest, PipelineResponse, PipelineStatus};
+use crate::executor::sandbox::{ErrorKind, StructuredError};
+use crate::models::{
+    AstAnalysis, ExecutionStats, PipelineRequest, PipelineResponse, PipelineStatus,
+};
 
-pub fn construct_pipeline_response(
-    status: PipelineStatus,
-    output: Option<String>,
-    logs: Vec<String>,
-    warnings: Vec<String>,
-) -> PipelineResponse {
-    PipelineResponse {
-        status,
-        output,
-        logs,
-        warnings,
+fn make_error_detail(kind: ErrorKind, message: &str, code: &str, line: Option<u32>) -> StructuredError {
+    let snippet = line.map(|l| {
+        let lines: Vec<&str> = code.lines().collect();
+        let center = (l as usize).saturating_sub(1);
+        let start = center.saturating_sub(2);
+        let end = (center + 2).min(lines.len().saturating_sub(1));
+        lines[start..=end]
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let lineno = start + i + 1;
+                if lineno == l as usize {
+                    format!(">>> {lineno:3} | {line}")
+                } else {
+                    format!("    {lineno:3} | {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    StructuredError {
+        kind,
+        message: message.to_string(),
+        line,
+        raw: message.to_string(),
+        snippet,
     }
 }
 
@@ -25,6 +42,7 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
     let should_execute = payload.execute.unwrap_or(false);
     let timeout_secs = payload.timeout.unwrap_or(2).clamp(1, 10);
     let mut warnings = Vec::new();
+    let source_code = payload.code.clone();
 
     if payload
         .timeout
@@ -33,28 +51,43 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
         warnings.push(format!("timeout normalized to {} seconds", timeout_secs));
     }
 
+    // --- Stage: Parse ---
     if payload.code.trim().is_empty() {
-        return Json(construct_pipeline_response(
-            PipelineStatus::SyntaxError {
-                error: AppError::parse("code is empty"),
-            },
-            None,
-            Vec::new(),
+        return Json(PipelineResponse {
+            status: PipelineStatus::SyntaxError,
+            source_code,
+            output: None,
+            logs: Vec::new(),
             warnings,
-        ));
+            error_detail: Some(make_error_detail(
+                ErrorKind::SyntaxError,
+                "code is empty",
+                &payload.code,
+                None,
+            )),
+            ast_analysis: None,
+            execution_stats: None,
+        });
     }
 
     let tree = match parse_lua_code(&payload.code) {
         Ok(tree) => tree,
         Err(error) => {
-            return Json(construct_pipeline_response(
-                PipelineStatus::SyntaxError {
-                    error: AppError::parse(error),
-                },
-                None,
-                Vec::new(),
+            return Json(PipelineResponse {
+                status: PipelineStatus::SyntaxError,
+                source_code,
+                output: None,
+                logs: Vec::new(),
                 warnings,
-            ));
+                error_detail: Some(make_error_detail(
+                    ErrorKind::SyntaxError,
+                    &error,
+                    &payload.code,
+                    None,
+                )),
+                ast_analysis: None,
+                execution_stats: None,
+            });
         }
     };
 
@@ -63,93 +96,131 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
 
     if !ast_errors.is_empty() {
         let error_message = ast_errors.join(", ");
-        return Json(construct_pipeline_response(
-            PipelineStatus::SyntaxError {
-                error: AppError::parse(error_message),
-            },
-            None,
-            Vec::new(),
+        return Json(PipelineResponse {
+            status: PipelineStatus::SyntaxError,
+            source_code,
+            output: None,
+            logs: Vec::new(),
             warnings,
-        ));
+            error_detail: Some(make_error_detail(
+                ErrorKind::SyntaxError,
+                &error_message,
+                &payload.code,
+                None,
+            )),
+            ast_analysis: None,
+            execution_stats: None,
+        });
     }
 
-    if let Some(matches) = find_dangerous_text_patterns(&payload.code) {
+    // --- Stage: Safety ---
+    let has_dangerous = find_dangerous_text_patterns(&payload.code);
+    if let Some(ref matches) = has_dangerous {
         let error_message = matches.join(", ");
-        return Json(construct_pipeline_response(
-            PipelineStatus::SafetyError {
-                error: AppError::safety(error_message),
-            },
-            None,
-            Vec::new(),
+        return Json(PipelineResponse {
+            status: PipelineStatus::SafetyError,
+            source_code,
+            output: None,
+            logs: Vec::new(),
             warnings,
-        ));
+            error_detail: Some(make_error_detail(
+                ErrorKind::SafetyError,
+                &error_message,
+                &payload.code,
+                None,
+            )),
+            ast_analysis: Some(AstAnalysis {
+                function_calls: extract_function_calls(&tree, &payload.code),
+                has_dangerous_patterns: true,
+                has_forbidden_calls: false,
+            }),
+            execution_stats: None,
+        });
     }
 
     let calls = extract_function_calls(&tree, &payload.code);
-
-    if let Some(matches) = find_forbidden_ast_calls(&calls) {
+    let has_forbidden = find_forbidden_ast_calls(&calls);
+    if let Some(ref matches) = has_forbidden {
         let error_message = matches.join(", ");
-        return Json(construct_pipeline_response(
-            PipelineStatus::SafetyError {
-                error: AppError::safety(error_message),
-            },
-            None,
-            Vec::new(),
+        return Json(PipelineResponse {
+            status: PipelineStatus::SafetyError,
+            source_code,
+            output: None,
+            logs: Vec::new(),
             warnings,
-        ));
+            error_detail: Some(make_error_detail(
+                ErrorKind::SafetyError,
+                &error_message,
+                &payload.code,
+                None,
+            )),
+            ast_analysis: Some(AstAnalysis {
+                function_calls: calls,
+                has_dangerous_patterns: false,
+                has_forbidden_calls: true,
+            }),
+            execution_stats: None,
+        });
     }
 
+    // --- Stage: Skip Execution ---
     if !should_execute {
         warnings.push("runtime execution skipped".to_string());
-        return Json(construct_pipeline_response(
-            PipelineStatus::Ok,
-            None,
-            Vec::new(),
+        return Json(PipelineResponse {
+            status: PipelineStatus::Ok,
+            source_code,
+            output: None,
+            logs: Vec::new(),
             warnings,
-        ));
+            error_detail: None,
+            ast_analysis: Some(AstAnalysis {
+                function_calls: calls,
+                has_dangerous_patterns: false,
+                has_forbidden_calls: false,
+            }),
+            execution_stats: None,
+        });
     }
 
-    let result = match execute_lua_code(payload.code, timeout_secs).await {
-        Ok(result) => result,
-        Err(error) => {
-            return Json(construct_pipeline_response(
-                PipelineStatus::RuntimeError {
-                    error: AppError::runtime(&error),
-                },
-                None,
-                vec![format!("[fatal] {error}")],
-                warnings,
-            ));
-        }
-    };
+    // --- Stage: Execute ---
+    let result = execute_lua_code(payload.code, timeout_secs).await;
 
-    let has_runtime_errors = result
-        .logs
-        .iter()
-        .any(|l| l.starts_with("[error]") || l.starts_with("[fatal]"));
+    let execution_stats = Some(ExecutionStats {
+        memory_used_bytes: result.memory_used_bytes,
+        execution_time_ms: result.execution_time_ms,
+    });
 
-    if has_runtime_errors {
-        let error_msg = result
-            .logs
-            .iter()
-            .find(|l| l.starts_with("[error]") || l.starts_with("[fatal]"))
-            .cloned()
-            .unwrap_or_else(|| "unknown runtime error".to_string());
+    let ast_analysis = Some(AstAnalysis {
+        function_calls: calls,
+        has_dangerous_patterns: false,
+        has_forbidden_calls: false,
+    });
 
-        return Json(construct_pipeline_response(
-            PipelineStatus::RuntimeError {
-                error: AppError::runtime(&error_msg),
-            },
-            None,
-            result.logs,
+    if let Some(err) = result.error {
+        let status = match err.kind {
+            ErrorKind::Timeout => PipelineStatus::Timeout,
+            _ => PipelineStatus::RuntimeError,
+        };
+        return Json(PipelineResponse {
+            status,
+            source_code,
+            output: None,
+            logs: result.logs,
             warnings,
-        ));
+            error_detail: Some(err),
+            ast_analysis,
+            execution_stats,
+        });
     }
 
-    Json(construct_pipeline_response(
-        PipelineStatus::Ok,
-        result.output,
-        result.logs,
+    Json(PipelineResponse {
+        status: PipelineStatus::Ok,
+        source_code,
+        output: result.output,
+        logs: result.logs,
         warnings,
-    ))
+        error_detail: None,
+        ast_analysis,
+        execution_stats,
+    })
 }
