@@ -22,6 +22,17 @@ Rules:
 3. Use clear variable names.
 4. Wrap the code in ```lua blocks.
 """.strip()
+# Роль 2: Кодер (Программист) (Исправления кода)
+
+SYSTEM_CODER = """
+You are a Senior Lua Developer.
+Your goal is to implement the provided plan into clean, efficient, and working Lua code.
+Rules:
+1. Write ONLY the code.
+2. NO explanations, NO introductory text ("Sure, here is your code..."), NO closing remarks, NO comments.
+3. Use clear variable names.
+4. Wrap the code in ```lua blocks.
+""".strip()
 
 # Роль 3: Критик (Валидатор)
 SYSTEM_CRITIC = f"""
