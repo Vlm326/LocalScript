@@ -1,4 +1,4 @@
-use axum::{Router, routing::post};
+use axum::{Router, routing::post, routing::get};
 use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -19,6 +19,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/pipeline", post(routes::pipeline::handle_pipeline))
+        .route("/health", get(|| async { "ok" }))
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 6778));
