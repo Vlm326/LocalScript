@@ -1,8 +1,8 @@
-use std::time::Duration;
 use mlua::{Error as LuaError, HookTriggers, Lua, MultiValue, Value, VmState};
+use serde_json::Value as JsonValue;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::{task, time};
-
 pub struct ExecutionResult {
     pub output: Option<String>,
     pub logs: Vec<String>,
@@ -49,10 +49,10 @@ fn parse_lua_error(error: &LuaError, code: &str) -> StructuredError {
 }
 
 fn extract_line_and_message(raw: &str) -> (Option<u32>, Option<String>) {
-    let re_pattern = raw.find("]:").map(|i| &raw[i+2..]).unwrap_or(raw);
+    let re_pattern = raw.find("]:").map(|i| &raw[i + 2..]).unwrap_or(raw);
     if let Some(colon) = re_pattern.find(':') {
         if let Ok(line) = re_pattern[..colon].trim().parse::<u32>() {
-            let msg = re_pattern[colon+1..].trim().to_string();
+            let msg = re_pattern[colon + 1..].trim().to_string();
             return (Some(line), Some(msg));
         }
     }
@@ -89,9 +89,7 @@ fn extract_snippet(code: &str, error_line: u32) -> String {
     }
 
     // clamp error_line в допустимый диапазон
-    let center = error_line
-        .saturating_sub(1)
-        .min(total as u32 - 1) as usize;
+    let center = error_line.saturating_sub(1).min(total as u32 - 1) as usize;
 
     let start = center.saturating_sub(2);
     let end = (center + 2).min(total - 1);
@@ -114,7 +112,63 @@ fn extract_snippet(code: &str, error_line: u32) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-pub fn start_lua_sandbox(tx: mpsc::Sender<String>) -> mlua::Result<Lua> {
+
+fn json_to_lua_value(lua: &Lua, value: &JsonValue) -> mlua::Result<Value> {
+    Ok(match value {
+        JsonValue::Null => Value::Nil,
+        JsonValue::Bool(v) => Value::Boolean(*v),
+        JsonValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Number(f)
+            } else {
+                Value::Nil
+            }
+        }
+        JsonValue::String(s) => Value::String(lua.create_string(s)?),
+        JsonValue::Array(arr) => {
+            let table = lua.create_table()?;
+            for (i, item) in arr.iter().enumerate() {
+                table.set(i + 1, json_to_lua_value(lua, item)?)?;
+            }
+            Value::Table(table)
+        }
+        JsonValue::Object(map) => {
+            let table = lua.create_table()?;
+            for (k, v) in map {
+                table.set(k.as_str(), json_to_lua_value(lua, v)?)?;
+            }
+            Value::Table(table)
+        }
+    })
+}
+
+fn inject_wf_context(lua: &Lua, context: &JsonValue) -> mlua::Result<()> {
+    let globals = lua.globals();
+    let wf = lua.create_table()?;
+
+    // Поддержка двух форматов:
+    // Формат A: {"wf": {"vars": {...}, "initVariables": {...}}}
+    // Формат B: {"vars": {...}, "initVariables": {...}}
+    let inner = if let Some(wf_obj) = context.get("wf") {
+        wf_obj
+    } else {
+        context
+    };
+
+    let empty = JsonValue::Object(Default::default());
+    let vars = inner.get("vars").unwrap_or(&empty);
+    let init_variables = inner.get("initVariables").unwrap_or(&empty);
+
+    wf.set("vars", json_to_lua_value(lua, vars)?)?;
+    wf.set("initVariables", json_to_lua_value(lua, init_variables)?)?;
+
+    globals.set("wf", wf)?;
+    Ok(())
+}
+
+pub fn start_lua_sandbox(tx: mpsc::Sender<String>, context: JsonValue) -> mlua::Result<Lua> {
     let lua = Lua::new();
     lua.set_memory_limit(8 * 1024 * 1024)?;
 
@@ -124,6 +178,8 @@ pub fn start_lua_sandbox(tx: mpsc::Sender<String>) -> mlua::Result<Lua> {
     globals.set("package", Value::Nil)?;
     globals.set("debug", Value::Nil)?;
     globals.set("coroutine", Value::Nil)?;
+
+    inject_wf_context(&lua, &context)?;
 
     let tx_print = tx.clone();
     let print_fn = lua.create_function(move |_, args: MultiValue| {
@@ -147,6 +203,7 @@ pub fn start_lua_sandbox(tx: mpsc::Sender<String>) -> mlua::Result<Lua> {
 pub async fn execute_lua_code(
     code: String,
     timeout_secs: u64,
+    context: JsonValue,
 ) -> ExecutionResult {
     let timeout = Duration::from_secs(timeout_secs);
     let (tx, mut rx) = mpsc::channel::<String>(128);
@@ -157,7 +214,7 @@ pub async fn execute_lua_code(
 
     let execution = task::spawn_blocking(move || {
         let exec_start = std::time::Instant::now();
-        let lua = match start_lua_sandbox(tx.clone()) {
+        let lua = match start_lua_sandbox(tx.clone(), context) {
             Ok(lua) => lua,
             Err(e) => {
                 let _ = tx.try_send(format!("[fatal] sandbox init failed: {e}"));
@@ -237,15 +294,13 @@ pub async fn execute_lua_code(
             memory_used_bytes: Some(memory as u64),
             execution_time_ms: Some(elapsed.as_millis() as u64),
         },
-        Ok(Ok(Err((structured_err, elapsed, memory)))) => {
-            ExecutionResult {
-                output: None,
-                logs,
-                error: Some(structured_err),
-                memory_used_bytes: Some(memory),
-                execution_time_ms: Some(elapsed.as_millis() as u64),
-            }
-        }
+        Ok(Ok(Err((structured_err, elapsed, memory)))) => ExecutionResult {
+            output: None,
+            logs,
+            error: Some(structured_err),
+            memory_used_bytes: Some(memory),
+            execution_time_ms: Some(elapsed.as_millis() as u64),
+        },
         Ok(Err(join_err)) => ExecutionResult {
             output: None,
             logs,
