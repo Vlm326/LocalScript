@@ -85,10 +85,23 @@ fn classify_error(raw: &str) -> ErrorKind {
 
 fn extract_snippet(code: &str, error_line: u32) -> String {
     let lines: Vec<&str> = code.lines().collect();
-    let total = lines.len() as u32;
-    let center = error_line.saturating_sub(1) as usize;
+    let total = lines.len();
+
+    if total == 0 {
+        return String::new();
+    }
+
+    // clamp error_line в допустимый диапазон
+    let center = error_line
+        .saturating_sub(1)
+        .min(total as u32 - 1) as usize;
+
     let start = center.saturating_sub(2);
-    let end = (center + 2).min(total.saturating_sub(1) as usize);
+    let end = (center + 2).min(total - 1);
+
+    if start > end {
+        return String::new();
+    }
 
     lines[start..=end]
         .iter()
@@ -96,7 +109,7 @@ fn extract_snippet(code: &str, error_line: u32) -> String {
         .map(|(i, line)| {
             let lineno = start + i + 1;
             if lineno == error_line as usize {
-                format!(">>> {lineno:3} | {line}")  
+                format!(">>> {lineno:3} | {line}")
             } else {
                 format!("    {lineno:3} | {line}")
             }
@@ -104,7 +117,6 @@ fn extract_snippet(code: &str, error_line: u32) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
 pub fn start_lua_sandbox(tx: mpsc::Sender<String>) -> mlua::Result<Lua> {
     let lua = Lua::new();
     lua.set_memory_limit(8 * 1024 * 1024)?;
