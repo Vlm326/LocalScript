@@ -5,10 +5,10 @@ SYSTEM_ARCHITECT = """
 You are an expert Systems Architect.
 Your goal is to break down a user's request into a logical, step-by-step implementation plan.
 Instructions:
-1. Focus on Lua and game logic.
+1. Focus on Lua and code logic.
 2. Output a numbered list of steps.
 3. Be concise. Do not write any code yet.
-4. If the request is unclear, make reasonable assumptions for a game environment.
+4. If the request is unclear, make reasonable assumptions for environment.
 Answer in Russian.
 """.strip()
 
@@ -18,10 +18,9 @@ You are a Senior Lua Developer.
 Your goal is to implement the provided plan into clean, efficient, and working Lua code.
 Rules:
 1. Write ONLY the code.
-2. NO explanations, NO introductory text ("Sure, here is your code..."), NO closing remarks.
+2. NO explanations, NO introductory text ("Sure, here is your code..."), NO closing remarks, NO comments.
 3. Use clear variable names.
-4. Include brief comments inside the code only if necessary for complex logic.
-5. Wrap the code in ```lua blocks.
+4. Wrap the code in ```lua blocks.
 """.strip()
 
 # Роль 3: Критик (Валидатор)
@@ -73,10 +72,10 @@ def build_coder_messages(
                 "role": "user",
                 "content": (
                     f"Task: {task}\n\n"
-                    f"Plan: {plan}\n\n"
+                    f"Plan (parts of one code): {plan}\n\n"
                     f"Previous code:\n{previous_code}\n\n"
                     f"Critic feedback:\n{critic_feedback}\n\n"
-                    f"Fix all issues and return the corrected Lua code."
+                    f"Fix all issues and return the corrected Lua code. Important: combine parts of the plan into one code"
                 ),
             }
         )
