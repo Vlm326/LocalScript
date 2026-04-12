@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::executor::sandbox::StructuredError;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -36,6 +37,7 @@ pub struct PipelineRequest {
     pub code: String,
     pub execute: Option<bool>,
     pub timeout: Option<u64>,
+    pub context: Option<JsonValue>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
