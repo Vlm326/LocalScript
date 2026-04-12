@@ -1,0 +1,5 @@
+pydentic
+fastapi[standard]
+ollama
+qdrant
+

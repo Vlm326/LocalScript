@@ -1,6 +1,7 @@
 from ollama_client import OllamaClient
 import prompts
 from config import confirm_word
+import time
 
 
 class GenerationPipeline:
@@ -32,16 +33,40 @@ class GenerationPipeline:
         Возвращает словарь с plan, raw_code (финальный), feedback и списком
         всех итераций исправления (iterations).
         """
+        total_time = 0
+
+        start_plan_time = time.perf_counter()
         plan = self._get_plan(user_input)
+        end_plan_time = time.perf_counter()
+        print("=" * 15, "\n", "PLAN_TIME: ", end_plan_time - start_plan_time)
+        total_time += end_plan_time - start_plan_time
+
+        start_code_time = time.perf_counter()
         raw_code = self._generate_code(plan, user_input, rag_data)
+        end_code_time = time.perf_counter()
+        print("=" * 15, "\n", "CODE_TIME: ", end_code_time - start_code_time)
+        total_time += end_code_time - start_code_time
 
         iterations = []
         feedback = ""
+
         for attempt in range(1, self.max_retries + 1):
+
+            start_feedback_time = time.perf_counter()
             feedback = self._critique_code(raw_code)
+            end_feedback_time = time.perf_counter()
+            print(
+                "=" * 15,
+                "\n",
+                "FEEDBACK_TIME: ",
+                end_feedback_time - start_feedback_time,
+            )
+            total_time += end_feedback_time - start_feedback_time
 
             if self._is_code_ok(feedback):
                 # Код прошёл валидацию
+                print("=" * 20, "TOTAL_TIME: ", total_time)
+
                 return {
                     "plan": plan,
                     "raw_code": raw_code,
@@ -50,9 +75,14 @@ class GenerationPipeline:
                     "status": "ok",
                 }
 
+            start_code_time = time.perf_counter()
             corrected_code = self._fix_code(
                 plan, user_input, rag_data, raw_code, feedback
             )
+            end_code_time = time.perf_counter()
+            print("=" * 15, "\n", "CODE_TIME: ", end_code_time - start_code_time)
+            total_time = end_code_time - start_code_time
+
             iterations.append(
                 {
                     "attempt": attempt,
@@ -62,6 +92,8 @@ class GenerationPipeline:
                 }
             )
             raw_code = corrected_code
+
+        print("20" * 20, "TOTAL_TIME: ", total_time)
 
         return {
             "plan": plan,
