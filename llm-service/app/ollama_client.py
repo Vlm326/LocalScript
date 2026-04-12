@@ -1,4 +1,4 @@
-import requests
+import httpx
 from typing import Dict, List, Optional
 
 
@@ -16,7 +16,7 @@ class OllamaClient:
         self.num_ctx = num_ctx
         self.temperature = temperature
 
-    def send_request(
+    async def send_request(
         self,
         messages: List[Dict[str, str]],
         keep_alive: int = 300,
@@ -32,7 +32,7 @@ class OllamaClient:
         payload: Dict = {
             "model": self.model,
             "messages": messages,
-            "stream": False, # передать все сообщение сразу
+            "stream": False,
             "keep_alive": f"{keep_alive}s",
             "options": {
                 "num_ctx": self.num_ctx,
@@ -43,10 +43,21 @@ class OllamaClient:
             payload["options"]["num_predict"] = num_predict
 
         try:
-            response = requests.post(self.api_url, json=payload, timeout=120)
-            response.raise_for_status()
-            result = response.json()
-            return result.get("message", {}).get("content", "")
-        except requests.exceptions.RequestException as e:
-            print(f"Ошибка при запросе к Ollama: {e}")
+            timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(self.api_url, json=payload)
+                response.raise_for_status()
+                result = response.json()
+                return result.get("message", {}).get("content", "")
+        except httpx.TimeoutException:
+            print(f"Timeout при запросе к Ollama (model={self.model})")
+            return None
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error {e.response.status_code} от Ollama: {e.response.text}")
+            return None
+        except httpx.RequestError as e:
+            print(f"Ошибка запроса к Ollama: {e}")
+            return None
+        except (KeyError, ValueError) as e:
+            print(f"Ошибка парсинга ответа Ollama: {e}")
             return None
