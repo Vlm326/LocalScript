@@ -6,13 +6,12 @@ class OllamaClient:
     def __init__(
         self,
         model_name: str,
-        host: str = "127.0.0.1",
-        port: int = 11434,
+        url: str = '127.0.0.1:11434',
         num_ctx: int = 4096,
         temperature: float = 0.0,
     ):
         self.model = model_name
-        self.base_url = f"http://{host}:{port}"
+        self.base_url = f"http://{url}"
         self.api_url = f"{self.base_url}/api/chat"
         self.num_ctx = num_ctx
         self.temperature = temperature
