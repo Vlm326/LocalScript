@@ -1,10 +1,9 @@
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 
-# ─── Pipeline status (matches Rust PipelineStatus with serde tag) ────────
 class StatusTag(str, Enum):
     ok = "ok"
     syntax_error = "syntax_error"
@@ -13,7 +12,6 @@ class StatusTag(str, Enum):
     timeout = "timeout"
 
 
-# ─── Error kinds (matches Rust ErrorKind with snake_case rename) ─────────
 class ErrorKind(str, Enum):
     syntax_error = "syntax_error"
     safety_error = "safety_error"
@@ -25,7 +23,6 @@ class ErrorKind(str, Enum):
     unknown = "unknown"
 
 
-# ─── Structured error detail (matches Rust StructuredError) ──────────────
 class StructuredError(BaseModel):
     kind: ErrorKind
     message: str
@@ -34,20 +31,17 @@ class StructuredError(BaseModel):
     snippet: Optional[str] = None
 
 
-# ─── AST analysis (matches Rust AstAnalysis) ─────────────────────────────
 class AstAnalysis(BaseModel):
     function_calls: List[str]
     has_dangerous_patterns: bool
     has_forbidden_calls: bool
 
 
-# ─── Execution stats (matches Rust ExecutionStats) ───────────────────────
 class ExecutionStats(BaseModel):
     memory_used_bytes: Optional[int] = None
     execution_time_ms: Optional[int] = None
 
 
-# ─── Pipeline request / response ─────────────────────────────────────────
 class SandboxRequest(BaseModel):
     code: str
     execute: Optional[bool] = False
@@ -80,7 +74,6 @@ class SandboxResponse(BaseModel):
         return "unknown error"
 
 
-# ─── LLM-service own models ──────────────────────────────────────────────
 class GenerateRequest(BaseModel):
     task: str
     execute: Optional[bool] = False
@@ -100,7 +93,7 @@ class GenerateResponse(BaseModel):
     code: str
     sandbox_result: Optional[SandboxResponse] = None
     iterations: List[IterationRecord] = Field(default_factory=list)
-    status: str  # "ok" | "retries_exhausted" | "clarification_needed"
+    status: str
     clarification_question: Optional[str] = None
 
 

@@ -23,17 +23,10 @@ class OllamaClient:
         keep_alive: int = 300,
         num_predict: int = 256,
     ) -> Optional[str]:
-        """Отправить список messages в Ollama и вернуть ответ.
-
-        Args:
-            messages: Список сообщений в формате [{"role": "system"|"user"|"assistant", "content": "..."}].
-            keep_alive: Время удержания модели в памяти в секундах (0 — выгрузить сразу).
-            num_predict: Максимальное количество генерируемых токенов.
-        """
         payload: Dict = {
             "model": self.model,
             "messages": messages,
-            "stream": False, # передать все сообщение сразу
+            "stream": False,
             "keep_alive": f"{keep_alive}s",
             "options": {
                 "num_ctx": self.num_ctx,
@@ -49,5 +42,5 @@ class OllamaClient:
             result = response.json()
             return result.get("message", {}).get("content", "")
         except requests.exceptions.RequestException as e:
-            print(f"Ошибка при запросе к Ollama: {e}")
+            print(f"Ollama request error: {e}")
             return None
