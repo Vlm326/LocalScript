@@ -26,13 +26,12 @@ class GenerationPipeline:
         self.client = OllamaClient(model_name, url = url)
         self.max_retries = max_retries
 
-    async def _generate_plan(self, task: str, total_time: int) -> str:
+    async def _generate_plan(self, task: str) -> str:
         start_plan_time = time.perf_counter()
         messages = prompts.build_architect_messages(task)
         result = await self.client.send_request(messages, keep_alive=300)
         end_plan_time = time.perf_counter()
         print("=" * 15, "\n", "PLAN_TIME: ", end_plan_time - start_plan_time)
-        total_time += end_plan_time - start_plan_time
         return result or ""
 
     async def _generate_code(self, plan: str, task: str, rag_data: str = "", previous_code: str = '', critic_feedback: str = "") -> str:
@@ -41,9 +40,8 @@ class GenerationPipeline:
         result = await self.client.send_request(messages, keep_alive=300)
         end_code_time = time.perf_counter()
         print("=" * 15, "\n", "CODE_TIME: ", end_code_time - start_code_time)
-        total_time += end_code_time - start_code_time
         return result or ""
-    
+
 
     async def _critique_code(self, code: str) -> str:
         start_feedback_time = time.perf_counter()
@@ -51,7 +49,6 @@ class GenerationPipeline:
         result = await self.client.send_request(messages, keep_alive=300)
         end_feedback_time = time.perf_counter()
         print("=" * 15, "\n", "FEEDBACK_TIME: ", end_feedback_time - start_feedback_time)
-        total_time += end_feedback_time - start_feedback_time
         return result or ""
  
     async def _fix_code(
