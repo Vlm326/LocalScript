@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,7 @@ class SandboxRequest(BaseModel):
     code: str
     execute: Optional[bool] = False
     timeout: Optional[int] = Field(default=2, ge=1, le=10)
+    context: Optional[Dict[str, Any]] = None
 
 
 class SandboxResponse(BaseModel):
@@ -108,6 +109,7 @@ class ValidateRequest(BaseModel):
     code: str
     execute: Optional[bool] = True
     timeout: Optional[int] = 2
+    context: Optional[Dict[str, Any]] = None
 
 
 class ValidateResponse(BaseModel):

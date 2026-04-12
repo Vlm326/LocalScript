@@ -26,13 +26,12 @@ class GenerationPipeline:
         self.client = OllamaClient(model_name, url = url)
         self.max_retries = max_retries
 
-    async def _generate_plan(self, task: str, time: int) -> str:
+    async def _generate_plan(self, task: str) -> str:
         start_plan_time = time.perf_counter()
         messages = prompts.build_architect_messages(task)
         result = await self.client.send_request(messages, keep_alive=300)
         end_plan_time = time.perf_counter()
         print("=" * 15, "\n", "PLAN_TIME: ", end_plan_time - start_plan_time)
-        total_time += end_plan_time - start_plan_time
         return result or ""
 
     async def _generate_code(self, plan: str, task: str, rag_data: str = "", previous_code: str = '', critic_feedback: str = "") -> str:
