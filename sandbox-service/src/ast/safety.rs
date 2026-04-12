@@ -64,12 +64,12 @@ const FORBIDDEN_AST_CALLS: [&str; 34] = [
     "_G",
     "_ENV",
     // Попытки обойти sandbox через строки
-    "load(", // load("os.execute...")
-    "loadstring(",
-    "dostring(",
+    "load", // load("os.execute...")
+    "loadstring",
+    "dostring",
     // Обфускация через char codes
-    "string.char(", // string.char(111,115) = "os"
-    "string.byte(",
+    "string.char", // string.char(111,115) = "os"
+    "string.byte",
     // Попытка достать глобальное окружение
     "getfenv(0)", // Lua 5.1 root env
     "debug.getinfo",
