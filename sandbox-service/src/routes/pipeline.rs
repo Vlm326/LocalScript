@@ -9,7 +9,12 @@ use crate::models::{
     AstAnalysis, ExecutionStats, PipelineRequest, PipelineResponse, PipelineStatus,
 };
 
-fn make_error_detail(kind: ErrorKind, message: &str, code: &str, line: Option<u32>) -> StructuredError {
+fn make_error_detail(
+    kind: ErrorKind,
+    message: &str,
+    code: &str,
+    line: Option<u32>,
+) -> StructuredError {
     let snippet = line.map(|l| {
         let lines: Vec<&str> = code.lines().collect();
         let center = (l as usize).saturating_sub(1);
@@ -92,22 +97,25 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
     };
 
     let mut ast_errors = Vec::new();
-    recursive_ast_walk(tree.root_node(), &mut ast_errors);
+    recursive_ast_walk(tree.root_node(), &mut ast_errors, &payload.code);
 
-    if !ast_errors.is_empty() {
-        let error_message = ast_errors.join(", ");
+    if let Some(first_error) = ast_errors.first() {
         return Json(PipelineResponse {
             status: PipelineStatus::SyntaxError,
             source_code,
             output: None,
             logs: Vec::new(),
             warnings,
-            error_detail: Some(make_error_detail(
-                ErrorKind::SyntaxError,
-                &error_message,
-                &payload.code,
-                None,
-            )),
+            error_detail: Some(StructuredError {
+                kind: ErrorKind::SyntaxError,
+                message: format!(
+                    "Syntax error at line {}, column {}",
+                    first_error.line, first_error.column
+                ),
+                line: Some(first_error.line as u32),
+                raw: "Syntax error in AST".to_string(),
+                snippet: Some(first_error.snippet.clone()),
+            }),
             ast_analysis: None,
             execution_stats: None,
         });
@@ -183,7 +191,15 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
     }
 
     // --- Stage: Execute ---
-    let result = execute_lua_code(payload.code, timeout_secs).await;
+    let context = payload.context.clone().unwrap_or_else(|| {
+        serde_json::json!({
+            "wf": {
+                "vars": {},
+                "initVariables": {}
+            }
+        })
+    });
+    let result = execute_lua_code(payload.code, timeout_secs, context).await;
 
     let execution_stats = Some(ExecutionStats {
         memory_used_bytes: result.memory_used_bytes,
