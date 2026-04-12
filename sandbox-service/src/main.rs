@@ -5,7 +5,6 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod ast;
-mod error;
 mod executor;
 mod models;
 mod routes;

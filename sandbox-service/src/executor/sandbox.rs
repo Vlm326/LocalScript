@@ -49,18 +49,15 @@ fn parse_lua_error(error: &LuaError, code: &str) -> StructuredError {
 }
 
 fn extract_line_and_message(raw: &str) -> (Option<u32>, Option<String>) {
-    for part in raw.split(':') {
-        if let Ok(line_num) = part.trim().parse::<u32>() {
-            let after = raw
-                .splitn(3, ':')
-                .nth(2)
-                .map(|s| s.trim().to_string());
-            return (Some(line_num), after);
+    let re_pattern = raw.find("]:").map(|i| &raw[i+2..]).unwrap_or(raw);
+    if let Some(colon) = re_pattern.find(':') {
+        if let Ok(line) = re_pattern[..colon].trim().parse::<u32>() {
+            let msg = re_pattern[colon+1..].trim().to_string();
+            return (Some(line), Some(msg));
         }
     }
     (None, None)
 }
-
 fn classify_error(raw: &str) -> ErrorKind {
     let lower = raw.to_lowercase();
     if lower.contains("timed out") || lower.contains("execution timed out") {
