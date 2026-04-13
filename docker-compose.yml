@@ -9,20 +9,27 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+    entrypoint: ["/bin/sh", "-c"]
+
+    command: |
+      ollama serve &
+      OLLAMA_PID=$!
+      echo "Waiting for Ollama..."
+      until curl -s http://localhost:11434 > /dev/null; do sleep 2; done
+      echo "Pulling model..."
+      ollama pull qwen2.5-coder:1.5b
+      echo "Model ready"
+      wait $OLLAMA_PID
+
     environment:
       - OLLAMA_KEEP_ALIVE=24h
 
-    command: >
-      sh -c '
-        ollama serve &
-        OLLAMA_PID=$$!
-        echo "Waiting for Ollama..."
-        until curl -s http://localhost:11434 > /dev/null; do sleep 2; done
-        echo "Pulling model..."
-        ollama pull qwen2.5-coder:7b
-        echo "Model ready"
-        wait $$OLLAMA_PID
-      '
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:11434 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
     restart: unless-stopped
 
@@ -32,11 +39,13 @@ services:
     container_name: sandbox-service
     ports:
       - "6778:6778"
+
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:6778/health"]
+      test: ["CMD-SHELL", "curl -fs http://localhost:6778/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+
     restart: unless-stopped
 
   llm-service:
@@ -45,19 +54,23 @@ services:
     container_name: llm-service
     ports:
       - "8080:8080"
+
     environment:
       - OLLAMA_URL=ollama:11434
       - SANDBOX_SERVICE_URL=http://sandbox-service:6778
+
     depends_on:
       ollama:
-        condition: service_started
+        condition: service_healthy
       sandbox-service:
         condition: service_healthy
+
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 10s
       timeout: 5s
       retries: 5
+
     restart: unless-stopped
 
 volumes:
