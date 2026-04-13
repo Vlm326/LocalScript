@@ -44,7 +44,7 @@ async def send_code_for_validation(code: str):
 
 
 def extract_validation_feedback(responce):
-    # responce_dict = json.loads(responce)
+    responce_dict = json.loads(responce)
     if responce_dict['status']['status'] == 'ok':
         return True
     else:
