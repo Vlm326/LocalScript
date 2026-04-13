@@ -51,6 +51,7 @@ Answer in Russian.
 
 # ─── Вспомогательные функции для сборки messages ───────────────────────────
 
+
 def build_architect_messages(task: str) -> list:
     """Сформировать messages для этапа планирования."""
     return [
@@ -72,9 +73,7 @@ def build_coder_messages(
     ]
 
     if rag_data:
-        messages.append(
-            {"role": "system", "content": f"Reference data:\n{rag_data}"}
-        )
+        messages.append({"role": "system", "content": f"Reference data:\n{rag_data}"})
 
     if previous_code and critic_feedback:
         # Итерация исправления: показываем предыдущий код и фидбэк критика
@@ -108,4 +107,3 @@ def build_critic_messages(code: str) -> list:
         {"role": "system", "content": SYSTEM_CRITIC},
         {"role": "user", "content": f"Review this Lua code:\n\n{code}"},
     ]
-

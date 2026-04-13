@@ -1,20 +1,10 @@
-import os
 import json
+import os
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
-
-from models import ValidateRequest
-
-app = FastAPI(title="LLM Service", version="0.1.0")
 
 SANDBOX_URL = os.getenv("SANDBOX_SERVICE_URL", "http://0.0.0.0:6778")
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
 
 
 async def send_code_for_validation(
@@ -32,7 +22,7 @@ async def send_code_for_validation(
         }
         resp = await client.post(f"{SANDBOX_URL}/pipeline", json=payload)
         resp.raise_for_status()
-        return resp.json()               # Почему возвращаем сырой json на rust-service?
+        return resp.json()
 
 
 def extract_validation_feedback(response: Any):

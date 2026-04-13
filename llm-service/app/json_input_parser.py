@@ -1,16 +1,11 @@
 import json
 import re
-from typing import Any, Dict, Optional
-from typing import Tuple
-
-from pydantic import BaseModel, Field
+from typing import Any, Dict, Tuple
 
 
 
 class ParseError(ValueError):
     pass
-
-
 
 
 def extract_context_and_clean_task(text: str) -> Tuple[str, dict]:
@@ -36,7 +31,7 @@ def extract_context_and_clean_task(text: str) -> Tuple[str, dict]:
 
     # вырезаем JSON из текста
     before = cleaned[:start]
-    after = cleaned[start + end:]
+    after = cleaned[start + end :]
 
     task_clean = (before + after).strip()
 
@@ -44,6 +39,7 @@ def extract_context_and_clean_task(text: str) -> Tuple[str, dict]:
         raise ParseError("Task text is empty after removing JSON")
 
     return task_clean, context
+
 
 def _strip_code_fences(text: str) -> str:
     text = text.strip()

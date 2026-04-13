@@ -1,12 +1,13 @@
-import httpx
 from typing import Dict, List, Optional
+
+import httpx
 
 
 class OllamaClient:
     def __init__(
         self,
         model_name: str,
-        url: str = '127.0.0.1:11434',
+        url: str = "127.0.0.1:11434",
         num_ctx: int = 4096,
         temperature: float = 0.0,
     ):

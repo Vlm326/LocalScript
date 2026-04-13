@@ -1,8 +1,8 @@
 from pipeline import GenerationPipeline
 
 pipe = GenerationPipeline("qwen2.5-coder:7b", max_retries=2)
-print("Запрос к Ollama", '\n')
-user_prompt = '''
+print("Запрос к Ollama", "\n")
+user_prompt = """
 Для полученных данных из предыдущего REST запроса очисти значения переменных ID,ENTITY_ID, CALL
 {
 "wf": {
@@ -28,7 +28,7 @@ user_prompt = '''
 }
 }
 }
-'''
+"""
 result = pipe._generate_code(user_prompt, "\n")
 
 print(result)

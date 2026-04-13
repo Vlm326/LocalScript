@@ -1,19 +1,20 @@
-import uuid
 import time
+import uuid
 from enum import Enum
 from typing import Optional
 
+from config import CODE_RETRIES_COUNT, GENERATION_MODEL, OLLAMA_URL
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-
+from json_input_parser import ParseError, extract_context_and_clean_task
 from pipeline import GenerationPipeline
-from sandbox_client import send_code_for_validation, extract_validation_feedback
-from config import GENERATION_MODEL, OLLAMA_URL, CODE_RETRIES_COUNT
-from json_input_parser import extract_context_and_clean_task, ParseError
+from pydantic import BaseModel
+from sandbox_client import extract_validation_feedback, send_code_for_validation
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="LLM Generation Service", version="0.1.0")
+
 
 # ---------------------------------------------------------------------------
 # Session state machine
@@ -57,6 +58,7 @@ sessions: dict[str, SessionData] = {}
 # Single pipeline instance — shared across sessions
 pipeline = GenerationPipeline(GENERATION_MODEL, OLLAMA_URL, max_retries=2)
 
+
 # ---------------------------------------------------------------------------
 # Request / Response models
 # ---------------------------------------------------------------------------
@@ -83,7 +85,9 @@ def _get_or_create_session(req: GenerateRequest) -> tuple[str, SessionData, bool
     if req.session_id and req.session_id in sessions:
         return req.session_id, sessions[req.session_id], False
     if not req.task:
-        raise HTTPException(status_code=400, detail="task is required for a new session")
+        raise HTTPException(
+            status_code=400, detail="task is required for a new session"
+        )
     sid = req.session_id or str(uuid.uuid4())
     sess = SessionData(req.task)
     sessions[sid] = sess
@@ -119,13 +123,14 @@ async def _handle_plan_generation(session: SessionData) -> GenerateResponse:
     )
 
 
-async def _handle_plan_revision(session: SessionData, user_feedback: str) -> GenerateResponse:
+async def _handle_plan_revision(
+    session: SessionData, user_feedback: str
+) -> GenerateResponse:
     """Step 2 — revise plan based on user feedback (loopable)."""
     session.plan_revision_count += 1
     # Feed previous plan + user corrections back into architect
     refined_plan = await pipeline._generate_plan(
         f"Предыдущий план:\n{session.plan}\n\nИсправления от пользователя:\n{user_feedback}\n\nОбнови план с учётом исправлений.",
-        
     )
     session.plan = refined_plan
     session.state = SessionState.AWAITING_PLAN_CONFIRMATION
@@ -164,7 +169,9 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
                     critic_feedback=f"Ошибка песочницы: {sandbox_feedback}",
                 )
                 raw_fixed = _strip_code_block(fixed_code)
-                sandbox_resp2 = await send_code_for_validation(raw_fixed, session.context)
+                sandbox_resp2 = await send_code_for_validation(
+                    raw_fixed, session.context
+                )
                 fb2 = extract_validation_feedback(sandbox_resp2)
                 if fb2 is True:
                     session.current_code = raw_fixed
@@ -203,7 +210,9 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
     )
 
 
-async def _handle_code_revision(session: SessionData, user_feedback: str) -> GenerateResponse:
+async def _handle_code_revision(
+    session: SessionData, user_feedback: str
+) -> GenerateResponse:
     """Step 4 — revise code based on user feedback (loopable), then sandbox + Ollama critic."""
     session.code_revision_count += 1
     revised_code = await pipeline._generate_code(
@@ -268,6 +277,8 @@ async def generate(req: GenerateRequest):
             session.user_task = clean_task
             session.context = context
         except ParseError as e:
+            session.user_task = req.task  # fallback to raw task
+            session.context = {"wf": {"vars": {}, "initVariables": {}}}
             raise HTTPException(status_code=400, detail=f"Invalid input: {e}")
     # ── First call: generate plan ──────────────────────────────────────
     if session.state == SessionState.GENERATING_PLAN:
@@ -307,7 +318,9 @@ async def generate(req: GenerateRequest):
 
     # ── Should not happen ─────────────────────────────────────────────
     else:
-        raise HTTPException(status_code=500, detail=f"Unexpected state: {session.state}")
+        raise HTTPException(
+            status_code=500, detail=f"Unexpected state: {session.state}"
+        )
 
     # Fill session_id into response
     result.session_id = sid

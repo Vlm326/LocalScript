@@ -75,7 +75,8 @@ class SandboxResponse(BaseModel):
             return self.error_detail.message
         if self.logs:
             return "; ".join(
-                l for l in self.logs
+                l
+                for l in self.logs
                 if l.startswith("[error]") or l.startswith("[fatal]")
             )
         return "unknown error"

@@ -2,8 +2,8 @@
 GENERATION_MODEL = "qwen2.5-coder:7b"
 
 # urls
-OLLAMA_URL = '127.0.0.1:11434'
-SANDBOX_SERVICE_URL = 'http://0.0.0.0:6778'
+OLLAMA_URL = "127.0.0.1:11434"
+SANDBOX_SERVICE_URL = "http://0.0.0.0:6778"
 
 # pipeline
 CONFIRM_WORD = "CODE_OK"
@@ -13,4 +13,3 @@ CODE_RETRIES_COUNT = 5
 # server
 HOST = "0.0.0.0"
 PORT = 8080
-
