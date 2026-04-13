@@ -48,6 +48,19 @@ services:
       retries: 5
     restart: unless-stopped
 
+  llm-tui:
+    build:
+      context: ./llm-tui
+      dockerfile: Dockerfile
+    container_name: llm-tui
+    environment:
+      - LLM_SERVICE_URL=http://llm-service:8080
+    depends_on:
+      - llm-service
+    stdin_open: true
+    tty: true
+    restart: "no"
+
   llm-service:
     build:
       context: ./llm-service
