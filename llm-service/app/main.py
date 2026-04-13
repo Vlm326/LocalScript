@@ -281,7 +281,6 @@ async def generate(req: GenerateRequest):
         except ParseError as e:
             session.user_task = req.task  # fallback to raw task
             session.context = {"wf": {"vars": {}, "initVariables": {}}}
-            raise HTTPException(status_code=400, detail=f"Invalid input: {e}")
     # ── First call: generate plan ──────────────────────────────────────
     if session.state == SessionState.GENERATING_PLAN:
         result = await _handle_plan_generation(session)
