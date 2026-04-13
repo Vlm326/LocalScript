@@ -15,3 +15,5 @@ CODE_RETRIES_COUNT = int(os.getenv("CODE_RETRIES_COUNT", "5"))
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 
+OLLAMA_URL = os.getenv("OLLAMA_URL", "ollama:11434")
+SANDBOX_SERVICE_URL = os.getenv("SANDBOX_SERVICE_URL", "http://sandbox-service:6778")
