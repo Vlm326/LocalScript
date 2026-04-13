@@ -33,7 +33,10 @@ class GenerationPipeline:
         result = await self.client.send_request(messages, keep_alive=300)
         end_plan_time = time.perf_counter()
         print("=" * 15, "\n", "PLAN_TIME: ", end_plan_time - start_plan_time)
-        return result or ""
+    
+        if not result or not result.strip():
+            raise RuntimeError("Ollama returned empty plan")
+        return result
 
     async def _generate_code(
         self,
