@@ -1,60 +1,53 @@
-import asyncio
 import os
-import httpx
 import json
+from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from config import SANDBOX_SERVICE_URL
+
+from models import ValidateRequest
 
 app = FastAPI(title="LLM Service", version="0.1.0")
 
 SANDBOX_URL = os.getenv("SANDBOX_SERVICE_URL", "http://0.0.0.0:6778")
 
 
-class ValidateRequest(BaseModel):
-    code: str
-    execute: bool = False
-    timeout: int = 2
-
-@app.post("/validate")
-async def validate(req: ValidateRequest):
-    async with httpx.AsyncClient(timeout=req.timeout + 5) as client:
-        resp = await client.post(
-            f"{SANDBOX_URL}/pipeline",
-            json={"code": req.code, "execute": req.execute, "timeout": req.timeout},
-        )
-        if not resp.is_success:
-            raise HTTPException(status_code=resp.status_code, detail=resp.text)
-        return resp.json()
-
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-async def send_code_for_validation(code: str):     
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{SANDBOX_URL}/pipeline",
-            json={"code": code, "execute": True, "timeout": 2}
-        )
+
+async def send_code_for_validation(
+    code: str,
+    context: Optional[dict[str, Any]] = None,
+    execute: bool = True,
+    timeout: int = 2,
+):
+    async with httpx.AsyncClient(timeout=timeout + 5) as client:
+        payload = {
+            "code": code,
+            "execute": execute,
+            "timeout": timeout,
+            "context": context,
+        }
+        resp = await client.post(f"{SANDBOX_URL}/pipeline", json=payload)
         resp.raise_for_status()
         return resp.json()               # Почему возвращаем сырой json на rust-service?
 
 
-def extract_validation_feedback(responce):
-    responce_dict = json.loads(responce)
-    if responce_dict['status'] == 'ok':
+def extract_validation_feedback(response: Any):
+    if isinstance(response, str):
+        response = json.loads(response)
+
+    if response.get("status") == "ok":
         return True
-    else:
-        error = responce_dict['error_detail']
-        if error:
-            return f"""{error["kind"]}: {error["message"]} in code part: {error["snippet"]}"""
-        print("Error is Null")
-        return ""
 
+    error = response.get("error_detail")
+    if not error:
+        return "Unknown error"
 
-
-
-
+    snippet = error.get("snippet")
+    feedback = f'{error["kind"]}: "{error["message"]}"'
+    if snippet:
+        feedback += f"\nin code part:\n{snippet}"
+    return feedback
