@@ -8,31 +8,43 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
-
     environment:
       - OLLAMA_KEEP_ALIVE=24h
-
-    command: serve   
-
+    command: serve
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:11434 || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 20s
-
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
+  # 🔥 init-контейнер: гарантированно кладёт модель в общий volume
   ollama-init:
     image: ollama/ollama:latest
+    container_name: ollama-init
     depends_on:
       ollama:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
+    volumes:
+      - ollama_data:/root/.ollama
     command: |
-      echo "Pulling model..."
-      ollama pull qwen2.5-coder:7b
-      echo "Model pulled"
+      echo "Waiting for Ollama API..."
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        curl -sf http://ollama:11434 && break
+        echo "Ollama not ready yet, retrying..."
+        sleep 3
+      done
+
+      echo "Pulling model qwen2.5-coder:7b..."
+      for i in 1 2 3 4 5; do
+        ollama pull qwen2.5-coder:7b && break
+        echo "Retry pull..."
+        sleep 5
+      done
+
+      echo "Model ready"
     restart: "no"
 
   sandbox-service:
@@ -48,19 +60,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  llm-tui:
-    build:
-      context: ./llm-tui
-      dockerfile: Dockerfile
-    container_name: llm-tui
-    environment:
-      - LLM_SERVICE_URL=http://llm-service:8080
-    depends_on:
-      - llm-service
-    stdin_open: true
-    tty: true
-    restart: "no"
-
   llm-service:
     build:
       context: ./llm-service
@@ -75,12 +74,26 @@ services:
         condition: service_healthy
       sandbox-service:
         condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  llm-tui:
+    build:
+      context: ./llm-tui
+    container_name: llm-tui
+    environment:
+      - LLM_SERVICE_URL=http://llm-service:8080
+    depends_on:
+      - llm-service
+    stdin_open: true
+    tty: true
+    restart: "no"
 
 volumes:
   ollama_data:
