@@ -1,35 +1,29 @@
+version: "3.9"
+
 services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-    volumes:
-      - ollama_data:/root/.ollama
     ports:
       - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+
     command: >
       sh -c '
         ollama serve &
         OLLAMA_PID=$$!
         echo "Waiting for Ollama..."
         until curl -s http://localhost:11434 > /dev/null; do sleep 2; done
-        echo "Pulling qwen2.5-coder:7b..."
+        echo "Pulling model..."
         ollama pull qwen2.5-coder:7b
         echo "Model ready"
         wait $$OLLAMA_PID
       '
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:11434 || wget --spider -q http://localhost:11434"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 300s
+
     restart: unless-stopped
 
   sandbox-service:
@@ -56,7 +50,7 @@ services:
       - SANDBOX_SERVICE_URL=http://sandbox-service:6778
     depends_on:
       ollama:
-        condition: service_healthy
+        condition: service_started
       sandbox-service:
         condition: service_healthy
     healthcheck:
