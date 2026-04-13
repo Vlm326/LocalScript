@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from pipeline import GenerationPipeline
 from sandbox_client import send_code_for_validation, extract_validation_feedback
 from config import GENERATION_MODEL, OLLAMA_URL, CODE_RETRIES_COUNT
-
+from json_input_parser import extract_context_and_clean_task, ParseError
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -30,6 +30,7 @@ class SessionData:
     __slots__ = (
         "state",
         "user_task",
+        "context",
         "plan",
         "plan_revision_count",
         "current_code",
@@ -41,6 +42,7 @@ class SessionData:
     def __init__(self, task: str):
         self.state = SessionState.GENERATING_PLAN
         self.user_task = task
+        self.context = None
         self.plan = ""
         self.plan_revision_count = 0
         self.current_code = ""
@@ -146,7 +148,7 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
 
     # --- Pass 1: Rust sandbox (interpretation errors) ---
     try:
-        sandbox_resp = await send_code_for_validation(raw_code)
+        sandbox_resp = await send_code_for_validation(raw_code, session.context)
         sandbox_feedback = extract_validation_feedback(sandbox_resp)
     except Exception as exc:
         sandbox_feedback = str(exc)
@@ -162,7 +164,7 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
                     critic_feedback=f"Ошибка песочницы: {sandbox_feedback}",
                 )
                 raw_fixed = _strip_code_block(fixed_code)
-                sandbox_resp2 = await send_code_for_validation(raw_fixed)
+                sandbox_resp2 = await send_code_for_validation(raw_fixed, session.context)
                 fb2 = extract_validation_feedback(sandbox_resp2)
                 if fb2 is True:
                     session.current_code = raw_fixed
@@ -216,7 +218,7 @@ async def _handle_code_revision(session: SessionData, user_feedback: str) -> Gen
     # --- Pass 1: Rust sandbox ---
     sandbox_feedback = ""
     try:
-        sandbox_resp = await send_code_for_validation(raw_revised)
+        sandbox_resp = await send_code_for_validation(raw_revised, session.context)
         fb = extract_validation_feedback(sandbox_resp)
         if fb is not True:
             sandbox_feedback = str(fb)
@@ -260,6 +262,13 @@ async def _handle_code_revision(session: SessionData, user_feedback: str) -> Gen
 async def generate(req: GenerateRequest):
     sid, session, is_new = _get_or_create_session(req)
 
+    if is_new:
+        try:
+            clean_task, context = extract_context_and_clean_task(req.task)
+            session.user_task = clean_task
+            session.context = context
+        except ParseError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid input: {e}")
     # ── First call: generate plan ──────────────────────────────────────
     if session.state == SessionState.GENERATING_PLAN:
         result = await _handle_plan_generation(session)
