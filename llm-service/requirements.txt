@@ -1,7 +1,7 @@
 pydentic
 fastapi[standard]
 ollama
-qdrant
+qdrant-client
 
 fastapi>=0.115
 uvicorn[standard]>=0.30
