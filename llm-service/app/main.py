@@ -3,13 +3,12 @@ import uuid
 from enum import Enum
 from typing import Optional
 
-from config import CODE_RETRIES_COUNT, GENERATION_MODEL, OLLAMA_URL
+from config import CODE_RETRIES_COUNT, GENERATION_MODEL, OLLAMA_URL, CONFIRM_WORD
 from fastapi import FastAPI, HTTPException
 from json_input_parser import ParseError, extract_context_and_clean_task
 from pipeline import GenerationPipeline
 from pydantic import BaseModel
 from sandbox_client import extract_validation_feedback, send_code_for_validation
-from config import CONFIRM_WORD
 
 # ---------------------------------------------------------------------------
 # App
@@ -212,9 +211,7 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
     )
 
 
-async def _handle_code_revision(
-    session: SessionData, user_feedback: str
-) -> GenerateResponse:
+async def _handle_code_revision(session: SessionData, user_feedback: str) -> GenerateResponse:
     """Step 4 — revise code based on user feedback (loopable), then sandbox + Ollama critic."""
     session.code_revision_count += 1
     revised_code = await pipeline._generate_code(
@@ -240,14 +237,16 @@ async def _handle_code_revision(
     critic_feedback = ""
     try:
         critic_result = await pipeline._critique_code(raw_revised)
-        if critic_result and critic_result.strip():
-            critic_feedback = critic_result
+        if critic_result:
+            critic_result = critic_result.strip()
+            if critic_result != CONFIRM_WORD:
+                critic_feedback = critic_result
     except Exception as exc:
         critic_feedback = str(exc)
 
     msg = f"Код обновлён (версия {session.code_revision_count})."
     issues = []
-    if sandbox_feedback:
+    if sandbox_feedback is not True:
         issues.append(f"песочница: {sandbox_feedback}")
     if critic_feedback:
         issues.append(f"критик: {critic_feedback}")
