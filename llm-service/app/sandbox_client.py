@@ -36,7 +36,7 @@ async def health():
 async def send_code_for_validation(code: str):
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{SANDBOX_URL}/validate",
+            f"{SANDBOX_URL}/pipeline",
             json={"code": code, "execute": True, "timeout": 2}
         )
         resp.raise_for_status()
@@ -44,12 +44,12 @@ async def send_code_for_validation(code: str):
 
 
 def extract_validation_feedback(responce):
-    responce_dict = json.loads(responce)
+    # responce_dict = json.loads(responce)
     if responce_dict['status']['status'] == 'ok':
         return True
     else:
         error = responce_dict['error_detail']
-        feedback = f'{error['kind']}: "{error['message']}" in code part: {error['snippet']}'
+        feedback = f'{error["kind"]}: "{error["message"]}" in code part: {error["snippet"]}'
         return feedback
 
 

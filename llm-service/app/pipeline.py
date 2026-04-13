@@ -20,7 +20,7 @@ class GenerationPipeline:
     def __init__(
         self,
         model_name: str,
-        url: str = '172.0.0.1:11434',
+        url: str = '127.0.0.1:11434',
         max_retries: int = 2,
     ):
         self.client = OllamaClient(model_name, url = url)
