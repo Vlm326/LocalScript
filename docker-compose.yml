@@ -31,7 +31,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: |
       echo "Pulling model..."
-      ollama pull qwen2.5-coder:1.5b
+      ollama pull qwen2.5-coder:7b
       echo "Model pulled"
     restart: "no"
 
