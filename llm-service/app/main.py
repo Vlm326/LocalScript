@@ -9,6 +9,7 @@ from json_input_parser import ParseError, extract_context_and_clean_task
 from pipeline import GenerationPipeline
 from pydantic import BaseModel
 from sandbox_client import extract_validation_feedback, send_code_for_validation
+from config import CONFIRM_WORD
 
 # ---------------------------------------------------------------------------
 # App
@@ -98,11 +99,15 @@ def _strip_code_block(text: str) -> str:
     """Extract raw Lua code from ```lua ... ``` blocks."""
     if "```lua" in text:
         start = text.index("```lua") + len("```lua")
-        end = text.index("```", start)
+        end = text.find("```", start)
+        if end == -1:
+            return text[start:].strip()
         return text[start:end].strip()
     if "```" in text:
         start = text.index("```") + len("```")
-        end = text.index("```", start)
+        end = text.find("```", start)
+        if end == -1:
+            return text[start:].strip()
         return text[start:end].strip()
     return text.strip()
 
@@ -188,16 +193,13 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
             pass
 
     # --- Pass 2: Ollama critic (logic, security, performance) ---
-    try:
-        critic_result = await pipeline._critique_code(session.current_code)
-    except Exception as exc:
-        critic_result = str(exc)
+    critic_result = await pipeline._critique_code(session.current_code)
 
     # Combine feedback for display
     combined_feedback = ""
     if sandbox_feedback is not True:
         combined_feedback += f"Sandbox: {sandbox_feedback}\n"
-    if critic_result and critic_result.strip():
+    if critic_result.upper() != CONFIRM_WORD:
         combined_feedback += f"Critic: {critic_result}"
 
     session.state = SessionState.AWAITING_CODE_APPROVAL
@@ -274,7 +276,7 @@ async def generate(req: GenerateRequest):
     if is_new:
         try:
             clean_task, context = extract_context_and_clean_task(req.task)
-            session.user_task = clean_task
+            session.user_task = req.task
             session.context = context
         except ParseError as e:
             session.user_task = req.task  # fallback to raw task
