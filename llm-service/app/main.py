@@ -3,7 +3,13 @@ import uuid
 from enum import Enum
 from typing import Optional
 
-from config import CODE_RETRIES_COUNT, GENERATION_MODEL, OLLAMA_URL, CONFIRM_WORD
+from config import (
+    CODE_RETRIES_MODEL,
+    GENERATION_MODEL,
+    OLLAMA_URL,
+    CONFIRM_WORD,
+    CODE_RETRIES_SANDBOX,
+)
 from fastapi import FastAPI, HTTPException
 from json_input_parser import ParseError, extract_context_and_clean_task
 from pipeline import GenerationPipeline
@@ -66,6 +72,7 @@ class GenerateRequest(BaseModel):
     session_id: Optional[str] = None
     task: str = ""
     user_response: str = ""  # "Подтвердить" or feedback/corrections
+    llm_validation: bool = True  # включить Ollama-критик после генерации кода
 
 
 class GenerateResponse(BaseModel):
@@ -111,6 +118,42 @@ def _strip_code_block(text: str) -> str:
     return text.strip()
 
 
+async def validate_code(
+    current_code,
+    pipeline: GenerationPipeline,
+    count_of_retries,
+    plan,
+    user_task,
+    context,
+):
+
+    # Sandbox error — auto-fix loop
+    sandbox_resp = await send_code_for_validation(current_code, context)
+    sandbox_feedback = extract_validation_feedback(sandbox_resp)
+    for attempt in range(1, count_of_retries + 1):
+        if sandbox_feedback is not True:
+            fixed_code = await pipeline._generate_code(
+                plan,
+                user_task,
+                previous_code=current_code,
+                critic_feedback=f"Ошибка песочницы: {sandbox_feedback}",
+            )
+            raw_fixed = _strip_code_block(fixed_code)
+            current_code = raw_fixed
+            sandbox_resp = await send_code_for_validation(raw_fixed, context)
+            sandbox_feedback = extract_validation_feedback(sandbox_resp)
+        else:
+            # возможно здесь стоит давать пользователю информацию насчет вероятной ошибки, котоую не смог исправить кодер
+            return True, current_code, None
+
+    else:
+        return (
+            False,
+            current_code,
+            str(sandbox_feedback),
+        )  # здесь можно выводить плачущего котика
+
+
 # ---------------------------------------------------------------------------
 # Core state machine
 # ---------------------------------------------------------------------------
@@ -146,7 +189,9 @@ async def _handle_plan_revision(
     )
 
 
-async def _handle_code_generation(session: SessionData) -> GenerateResponse:
+async def _handle_code_generation(
+    session: SessionData, llm_validation: bool = True
+) -> GenerateResponse:
     """Step 3 — generate code from confirmed plan, run sandbox, run Ollama critic, then return to user."""
     session.state = SessionState.GENERATING_CODE
     code = await pipeline._generate_code(session.plan, session.user_task)
@@ -156,64 +201,93 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
     session.sandbox_feedback = ""
 
     # --- Pass 1: Rust sandbox (interpretation errors) ---
-    try:
-        sandbox_resp = await send_code_for_validation(raw_code, session.context)
-        sandbox_feedback = extract_validation_feedback(sandbox_resp)
-    except Exception as exc:
-        sandbox_feedback = str(exc)
 
-    if sandbox_feedback is not True:
-        # Sandbox error — auto-fix loop
-        for attempt in range(1, CODE_RETRIES_COUNT + 1):
-            try:
+    successfull_validation, session.current_code, sandbox_feedback = (
+        await validate_code(
+            session.current_code,
+            pipeline,
+            CODE_RETRIES_SANDBOX,
+            session.plan,
+            session.user_task,
+            session.context,
+        )
+    )
+
+    if successfull_validation is not True:
+        session.state = SessionState.AWAITING_CODE_APPROVAL
+        return GenerateResponse(
+            session_id="",
+            state=session.state,
+            code=session.current_code,
+            sandbox_feedback=sandbox_feedback,
+            message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Ошибка проверки кода: {sandbox_feedback}",
+        )
+ 
+
+
+
+    # --- Pass 2: Ollama critic (logic, security, performance) ---
+    critic_result = ""
+    if llm_validation:
+        for attempt in range(1, CODE_RETRIES_MODEL + 1):
+            critic_result = await pipeline._critique_code(session.current_code)
+            if critic_result.strip().upper() != CONFIRM_WORD:
                 fixed_code = await pipeline._generate_code(
                     session.plan,
                     session.user_task,
                     previous_code=session.current_code,
-                    critic_feedback=f"Ошибка песочницы: {sandbox_feedback}",
+                    critic_feedback=f"{critic_result}",
                 )
                 raw_fixed = _strip_code_block(fixed_code)
-                sandbox_resp2 = await send_code_for_validation(
-                    raw_fixed, session.context
+                successfull_validation, session.current_code, sandbox_feedback = (
+                    await validate_code(
+                        raw_fixed,
+                        pipeline,
+                        CODE_RETRIES_SANDBOX,
+                        session.plan,
+                        session.user_task,
+                        session.context,
+                    )
                 )
-                fb2 = extract_validation_feedback(sandbox_resp2)
-                if fb2 is True:
-                    session.current_code = raw_fixed
-                    sandbox_feedback = True
-                    break
-                else:
-                    session.current_code = raw_fixed
-                    sandbox_feedback = fb2
-            except Exception as exc:
-                sandbox_feedback = str(exc)
+                if successfull_validation is not True:
+                    session.state = SessionState.AWAITING_CODE_APPROVAL
+                    return GenerateResponse(
+                        session_id="",
+                        state=session.state,
+                        code=session.current_code,
+                        sandbox_feedback=sandbox_feedback,
+                        message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Ошибка проверки кода: {sandbox_feedback, critic_result}",
+                    )
 
-        if sandbox_feedback is not True:
-            # Exhausted sandbox retries — still proceed to Ollama critic
-            pass
-
-    # --- Pass 2: Ollama critic (logic, security, performance) ---
-    critic_result = await pipeline._critique_code(session.current_code)
-
-    # Combine feedback for display
-    combined_feedback = ""
-    if sandbox_feedback is not True:
-        combined_feedback += f"Sandbox: {sandbox_feedback}\n"
-    if critic_result.upper() != CONFIRM_WORD:
-        combined_feedback += f"Critic: {critic_result}"
+                
+            else:
+                break
+                # возможно, стоит не менять код а просто дать пользователю лог
+                # session.state = SessionState.AWAITING_CODE_APPROVAL
+                # return GenerateResponse(
+                #     session_id="",
+                #     state=session.state,
+                #     code=session.current_code,
+                #     sandbox_feedback=sandbox_feedback,
+                #     message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Возможная ошибка {critic_result}",
+                # )
 
     session.state = SessionState.AWAITING_CODE_APPROVAL
     return GenerateResponse(
         session_id="",
         state=session.state,
         code=session.current_code,
-        sandbox_feedback=combined_feedback or None,
+        sandbox_feedback=sandbox_feedback,
         message="Код прошёл проверки. Подтвердите или укажите исправления.",
     )
 
 
-async def _handle_code_revision(session: SessionData, user_feedback: str) -> GenerateResponse:
+async def _handle_code_revision(
+    session: SessionData, user_feedback: str, llm_validation: bool = True
+) -> GenerateResponse:
     """Step 4 — revise code based on user feedback (loopable), then sandbox + Ollama critic."""
     session.code_revision_count += 1
+
     revised_code = await pipeline._generate_code(
         session.plan,
         session.user_task,
@@ -224,43 +298,77 @@ async def _handle_code_revision(session: SessionData, user_feedback: str) -> Gen
     session.current_code = raw_revised
 
     # --- Pass 1: Rust sandbox ---
-    sandbox_feedback = ""
-    try:
-        sandbox_resp = await send_code_for_validation(raw_revised, session.context)
-        fb = extract_validation_feedback(sandbox_resp)
-        if fb is not True:
-            sandbox_feedback = str(fb)
-    except Exception as exc:
-        sandbox_feedback = str(exc)
+    successfull_validation, session.current_code, sandbox_feedback = (
+        await validate_code(
+            session.current_code,
+            pipeline,
+            CODE_RETRIES_SANDBOX,
+            session.plan,
+            user_feedback + " " + session.user_task,
+            session.context,
+        )
+    )
 
-    # --- Pass 2: Ollama critic ---
-    critic_feedback = ""
-    try:
-        critic_result = await pipeline._critique_code(raw_revised)
-        if critic_result:
-            critic_result = critic_result.strip()
-            if critic_result != CONFIRM_WORD:
-                critic_feedback = critic_result
-    except Exception as exc:
-        critic_feedback = str(exc)
+    if successfull_validation is not True:
+        session.state = SessionState.AWAITING_CODE_APPROVAL
+        return GenerateResponse(
+            session_id="",
+            state=session.state,
+            code=session.current_code,
+            sandbox_feedback=sandbox_feedback,
+            message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Ошибка проверки кода:  {sandbox_feedback}",
+        )
+ 
+
+
+
+    critic_result = ""
+    if llm_validation:
+        for attempt in range(1, CODE_RETRIES_MODEL + 1):
+            critic_result = await pipeline._critique_code(session.current_code)
+            if critic_result.strip().upper() != CONFIRM_WORD:
+                fixed_code = await pipeline._generate_code(
+                    session.plan,
+                    session.user_task,
+                    previous_code=session.current_code,
+                    critic_feedback=f"{critic_result}. {user_feedback}",
+                )
+                raw_fixed = _strip_code_block(fixed_code)
+                successfull_validation, session.current_code, sandbox_feedback = (
+                    await validate_code(
+                        raw_fixed,
+                        pipeline,
+                        CODE_RETRIES_SANDBOX,
+                        session.plan,
+                        session.user_task,
+                        session.context,
+                    )
+                )
+                if successfull_validation is not True:
+                    session.state = SessionState.AWAITING_CODE_APPROVAL
+                    return GenerateResponse(
+                        session_id="",
+                        state=session.state,
+                        code=session.current_code,
+                        sandbox_feedback=sandbox_feedback,
+                        message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Возможная ошибка {critic_result}",
+                    )
+
+
+            else:
+                break
+   
+
+
 
     msg = f"Код обновлён (версия {session.code_revision_count})."
-    issues = []
-    if sandbox_feedback is not True:
-        issues.append(f"песочница: {sandbox_feedback}")
-    if critic_feedback:
-        issues.append(f"критик: {critic_feedback}")
-    if issues:
-        msg += " Замечания — " + "; ".join(issues) + "."
-    else:
-        msg += " Все проверки пройдены."
     msg += " Подтвердите или укажите исправления."
 
     return GenerateResponse(
         session_id="",
         state=session.state,
-        code=raw_revised,
-        sandbox_feedback=sandbox_feedback or None,
+        code=session.current_code,
+        sandbox_feedback=sandbox_feedback,
         message=msg,
     )
 
@@ -288,7 +396,7 @@ async def generate(req: GenerateRequest):
     elif session.state == SessionState.AWAITING_PLAN_CONFIRMATION:
         if req.user_response.strip() == "Подтвердить":
             # Plan approved — move to code generation
-            result = await _handle_code_generation(session)
+            result = await _handle_code_generation(session, req.llm_validation)
         else:
             # Revise plan (loop — user can repeat indefinitely)
             result = await _handle_plan_revision(session, req.user_response)
@@ -305,7 +413,7 @@ async def generate(req: GenerateRequest):
             )
         else:
             # Revise code based on user feedback (loop — repeat indefinitely)
-            result = await _handle_code_revision(session, req.user_response)
+            result = await _handle_code_revision(session, req.user_response, req.llm_validation)
 
     # ── Done — any further call returns the approved code ─────────────
     elif session.state == SessionState.DONE:

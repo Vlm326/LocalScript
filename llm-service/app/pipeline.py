@@ -69,23 +69,6 @@ class GenerationPipeline:
         )
         return result or ""
 
-    async def _fix_code(
-        self,
-        plan: str,
-        task: str,
-        rag_data: str,
-        previous_code: str,
-        critic_feedback: str,
-    ) -> str:
-        messages = prompts.build_coder_messages(
-            plan=plan,
-            task=task,
-            rag_data=rag_data,
-            previous_code=previous_code,
-            critic_feedback=critic_feedback,
-        )
-        result = await self.client.send_request(messages, keep_alive=300)
-        return result or ""
 
     def _is_code_ok(self, feedback: str) -> bool:
         """Проверить, что критик принял код (содержит CODE_OK)."""
