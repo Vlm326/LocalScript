@@ -1,6 +1,6 @@
 from ollama_client import OllamaClient
 import prompts
-from config import confirm_word
+from config import CONFIRM_WORD
 import time
 
 
@@ -71,4 +71,4 @@ class GenerationPipeline:
 
     def _is_code_ok(self, feedback: str) -> bool:
         """Проверить, что критик принял код (содержит CODE_OK)."""
-        return confirm_word in feedback.upper()
+        return CONFIRM_WORD in feedback.upper()

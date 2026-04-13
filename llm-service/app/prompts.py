@@ -1,4 +1,4 @@
-from config import confirm_word
+from config import CONFIRM_WORD
 
 # Роль 1: Архитектор (Планировщик)
 SYSTEM_ARCHITECT = """
@@ -42,7 +42,7 @@ Review the provided Lua code for:
 2. Performance bottlenecks.
 3. Potential security vulnerabilities.
 Instructions:
-- If the code is perfect, respond with exactly: {confirm_word}
+- If the code is perfect, respond with exactly: {CONFIRM_WORD}
 - If there are issues, list each issue on a new line and suggest a concrete fix.
 - Do NOT rewrite the entire code; only describe what needs to be changed.
 Answer in Russian.

@@ -7,8 +7,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from pipeline import GenerationPipeline
-from sandbox_client import send_code_for_validation, extract_validation_feedback, send_code_to_llm_validation
-from config import GENERATION_MODEL, ADDRESS, OLLAMA_PORT, CODE_RETRIES_COUNT
+from sandbox_client import send_code_for_validation, extract_validation_feedback
+from config import GENERATION_MODEL, OLLAMA_URL, CODE_RETRIES_COUNT
 
 # ---------------------------------------------------------------------------
 # App
@@ -53,7 +53,7 @@ class SessionData:
 sessions: dict[str, SessionData] = {}
 
 # Single pipeline instance — shared across sessions
-pipeline = GenerationPipeline(GENERATION_MODEL, ADDRESS, OLLAMA_PORT, max_retries=2)
+pipeline = GenerationPipeline(GENERATION_MODEL, OLLAMA_URL, max_retries=2)
 
 # ---------------------------------------------------------------------------
 # Request / Response models
@@ -106,7 +106,7 @@ def _strip_code_block(text: str) -> str:
 # ---------------------------------------------------------------------------
 async def _handle_plan_generation(session: SessionData) -> GenerateResponse:
     """Step 1 — generate initial plan."""
-    plan = await pipeline._generate_plan(session.user_task, total_time=0)
+    plan = await pipeline._generate_plan(session.user_task)
     session.plan = plan
     session.state = SessionState.AWAITING_PLAN_CONFIRMATION
     return GenerateResponse(
@@ -123,7 +123,7 @@ async def _handle_plan_revision(session: SessionData, user_feedback: str) -> Gen
     # Feed previous plan + user corrections back into architect
     refined_plan = await pipeline._generate_plan(
         f"Предыдущий план:\n{session.plan}\n\nИсправления от пользователя:\n{user_feedback}\n\nОбнови план с учётом исправлений.",
-        total_time=0,
+        
     )
     session.plan = refined_plan
     session.state = SessionState.AWAITING_PLAN_CONFIRMATION
