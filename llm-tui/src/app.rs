@@ -29,11 +29,32 @@ pub enum ChatMessage {
     Error(String),
 }
 
+/// События, обрабатываемые в главном цикле UI
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// Пользователь ввёл текст (нажал Enter)
+    UserInput(String),
+    /// Ответ от API
+    ApiResponse(Result<GenerateResponse, String>),
+}
+
 /// Результат асинхронного API-запроса, отправляемый из фоновой задачи в UI-поток.
 #[derive(Debug, Clone)]
 pub enum ApiEvent {
     Response(GenerateResponse),
     Error(String),
+}
+
+/// Валидация допустимых переходов состояний
+fn validate_state_transition(from: &TuiState, to: &str) -> bool {
+    match (from, to) {
+        (TuiState::EnterTask, "awaiting_plan_confirmation") => true,
+        (TuiState::AwaitingPlan, "awaiting_plan_confirmation") => true,
+        (TuiState::AwaitingPlan, "awaiting_code_approval") => true,
+        (TuiState::AwaitingCode, "awaiting_code_approval") => true,
+        (TuiState::AwaitingCode, "done") => true,
+        _ => false,
+    }
 }
 
 pub struct App {
@@ -65,11 +86,14 @@ impl App {
 
     /// Синхронная часть: добавляет сообщение пользователя, очищает input,
     /// переключает в Loading. Вызывается НЕМЕДЛЕННО при нажатии Enter.
-    pub fn submit_message(&mut self) -> Option<ApiRequest> {
-        let text = self.input.trim().to_string();
+    /// Принимает текст напрямую (не из input поля).
+    pub fn submit_message_sync(&mut self, text: &str) -> Option<ApiRequest> {
+        let text = text.trim().to_string();
         if text.is_empty() || self.state == TuiState::Loading {
             return None;
         }
+
+        log::info!("User input: state={:?}, text={}", self.state, text);
 
         // Мгновенная реакция UI
         self.input.clear();
@@ -80,13 +104,23 @@ impl App {
         let normalized = if text.to_lowercase().contains("подтверд") {
             "Подтвердить".to_string()
         } else {
-            text.clone()
+            text
         };
+
+        // Валидация session_id для существующих сессий
+        if self.state != TuiState::EnterTask && self.session_id.is_none() {
+            log::error!("No session_id for state {:?}", self.state);
+            self.messages.push(ChatMessage::Error("Ошибка: нет session_id. Сессия сброшена.".to_string()));
+            self.state = TuiState::Error("No session_id".to_string());
+            return None;
+        }
 
         // Захватываем данные для фонового запроса ПЕРЕД сменой состояния
         let prev_state = self.state.clone();
         let session_id = self.session_id.clone();
         let config = self.config.clone();
+
+        log::info!("Submitting API request: {:?} -> session_id={:?}", prev_state, session_id);
 
         // Переключаем в Loading
         self.state = TuiState::Loading;
@@ -100,20 +134,38 @@ impl App {
         })
     }
 
-    // ─── Async: обработка результата из фоновой задачи ───────────────────────
+    // ─── Обработка ответа API (вызывается из главного цикла) ──────────────────
 
-    /// Вызывается когда фоновая задача прислала ответ.
-    pub fn handle_api_event(&mut self, event: ApiEvent) {
-        match event {
-            ApiEvent::Response(resp) => self._apply_response(resp),
-            ApiEvent::Error(err) => {
-                self.messages.push(ChatMessage::Error(err.clone()));
-                self.state = TuiState::Error(err);
-            }
-        }
+    /// Обрабатывает ответ от API. Вызывается ТОЛЬКО из главного цикла UI.
+    pub fn handle_response(&mut self, resp: GenerateResponse) {
+        self._apply_response(resp);
+    }
+
+    /// Вызывается когда фоновая задача прислала ошибку.
+    #[allow(dead_code)]
+    pub fn handle_error(&mut self, err: String) {
+        log::error!("API Error: {}", err);
+        self.messages.push(ChatMessage::Error(err.clone()));
+        self.state = TuiState::Error(err);
     }
 
     fn _apply_response(&mut self, resp: GenerateResponse) {
+        let prev_state = self.state.clone();
+        
+        // Логируем ответ
+        log::info!("API Response: state={}, session_id={}", resp.state, resp.session_id);
+        
+        // Валидируем переход состояния
+        if !validate_state_transition(&prev_state, &resp.state) {
+            log::error!("Invalid state transition: {:?} -> {}. Игнорируем ответ.", prev_state, resp.state);
+            self.messages.push(ChatMessage::Error(format!(
+                "Ошибка: неверный переход состояния {:?} -> {}. Обратите внимание: состояние сброшено.",
+                prev_state, resp.state
+            )));
+            self.state = TuiState::Error(format!("Invalid transition: {:?} -> {}", prev_state, resp.state));
+            return;
+        }
+
         self.session_id = Some(resp.session_id.clone());
 
         match resp.state.as_str() {
