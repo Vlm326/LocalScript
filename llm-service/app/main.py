@@ -253,6 +253,7 @@ async def _handle_code_generation(
             else:
                 break
 
+
     session.state = SessionState.AWAITING_CODE_APPROVAL
     return GenerateResponse(
         session_id="",
