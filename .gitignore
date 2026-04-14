@@ -29,6 +29,5 @@ Thumbs.db
 *.so
 *.exe
 
-*.txt
 .qwen
 .vscode

@@ -44,13 +44,22 @@ async fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    // Паника-безопасное восстановление терминала
+    std::panic::set_hook(Box::new(|panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        eprintln!("PANIC: {}", panic_info);
+    }));
 
     // Запуск приложения
     let result = run_app(&mut terminal).await;
 
     // Восстановление терминала: raw mode off + leave alternate screen
+    std::panic::set_hook(Box::new(|_| {}));
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
