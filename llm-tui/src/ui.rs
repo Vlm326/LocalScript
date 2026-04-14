@@ -3,8 +3,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 use crate::app::{App, ChatMessage, TuiState};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -12,6 +13,9 @@ use crate::app::{App, ChatMessage, TuiState};
 static SPINNER_FRAMES: &[char] = &['⠋', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const SIDEBAR_WIDTH_RATIO: u16 = 25; // percent
+
+// Base style applied to every widget to prevent background bleed
+const BASE_STYLE: Style = Style::new().bg(Color::Reset);
 
 // ─── Message role definitions ────────────────────────────────────────────────
 
@@ -209,11 +213,13 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 
     let sidebar_block = Block::default()
         .borders(Borders::ALL)
-        .title(" Info ");
+        .title(" Info ")
+        .style(BASE_STYLE);
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(sidebar_block)
-        .alignment(Alignment::Left);
+        .alignment(Alignment::Left)
+        .style(BASE_STYLE);
 
     frame.render_widget(paragraph, area);
 }
@@ -221,6 +227,9 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 // ─── Main layout and rendering ───────────────────────────────────────────────
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // Clear entire frame before drawing — prevents background artifacts
+    frame.render_widget(Clear, frame.area());
+
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -249,7 +258,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 fn render_history(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" History ")
-        .borders(Borders::ALL);
+        .borders(Borders::ALL)
+        .style(BASE_STYLE);
 
     // Render messages in natural order (oldest → newest)
     // scroll_offset=0 → newest messages visible
@@ -262,7 +272,7 @@ fn render_history(frame: &mut Frame, app: &App, area: Rect) {
         items.push(render_message_card(msg));
     }
 
-    let list = List::new(items).block(block);
+    let list = List::new(items).block(block).style(BASE_STYLE);
     frame.render_widget(list, area);
 }
 
@@ -280,9 +290,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .title(" Input ")
         .borders(Borders::ALL)
         .style(if enabled {
-            Style::default().fg(Color::Cyan)
+            Style::default().bg(Color::Reset).fg(Color::Cyan)
         } else {
-            Style::default()
+            Style::default().bg(Color::Reset)
         });
 
     let input = Paragraph::new(Text::from(Span::styled(
@@ -293,13 +303,17 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::White)
         },
     )))
-    .block(input_block);
+    .block(input_block)
+    .style(BASE_STYLE);
 
     frame.render_widget(input, area);
 
     // Cursor: only when enabled
+    // Use UnicodeWidthStr::width() — NOT .len() (byte count).
+    // "я".len() == 2 bytes, but display width == 1 cell.
     if enabled {
-        let x = area.x + app.input.len() as u16 + 1;
+        let width = UnicodeWidthStr::width(app.input.as_str()) as u16;
+        let x = area.x + width + 1;
         let y = area.y + 1;
         frame.set_cursor_position((x, y));
     }
@@ -357,6 +371,8 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ])
     };
 
-    let status = Paragraph::new(status_line).alignment(Alignment::Left);
+    let status = Paragraph::new(status_line)
+        .alignment(Alignment::Left)
+        .style(BASE_STYLE);
     frame.render_widget(status, area);
 }
