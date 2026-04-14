@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use crate::config::Config;
-use crate::api;
+use crate::api::{self, GenerateResponse};
 
 /// Состояние TUI-приложения (отражает backend state machine)
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +29,13 @@ pub enum ChatMessage {
     Error(String),
 }
 
+/// Результат асинхронного API-запроса, отправляемый из фоновой задачи в UI-поток.
+#[derive(Debug, Clone)]
+pub enum ApiEvent {
+    Response(GenerateResponse),
+    Error(String),
+}
+
 pub struct App {
     pub messages: Vec<ChatMessage>,
     pub input: String,
@@ -54,16 +61,19 @@ impl App {
         }
     }
 
-    pub async fn send_message(&mut self) -> Result<()> {
+    // ─── Sync: мгновенное обновление UI при нажатии Enter ────────────────────
+
+    /// Синхронная часть: добавляет сообщение пользователя, очищает input,
+    /// переключает в Loading. Вызывается НЕМЕДЛЕННО при нажатии Enter.
+    pub fn submit_message(&mut self) -> Option<ApiRequest> {
         let text = self.input.trim().to_string();
         if text.is_empty() || self.state == TuiState::Loading {
-            return Ok(());
+            return None;
         }
 
+        // Мгновенная реакция UI
         self.input.clear();
         self.scroll_offset = 0;
-
-        // Добавляем сообщение пользователя в историю
         self.messages.push(ChatMessage::User(text.clone()));
 
         // Нормализуем "Подтвердить" — регистронезависимо
@@ -73,64 +83,41 @@ impl App {
             text.clone()
         };
 
-        // Сохраняем состояние ДО переключения в Loading
-        let prev_state = std::mem::replace(&mut self.state, TuiState::Loading);
+        // Захватываем данные для фонового запроса ПЕРЕД сменой состояния
+        let prev_state = self.state.clone();
+        let session_id = self.session_id.clone();
+        let config = self.config.clone();
 
-        let result = match prev_state {
-            TuiState::EnterTask => self._start_session(&text).await,
-            TuiState::AwaitingPlan | TuiState::AwaitingCode => {
-                self._send_response(&normalized).await
-            }
-            _ => Ok(()),
-        };
+        // Переключаем в Loading
+        self.state = TuiState::Loading;
 
-        if let Err(e) = result {
-            self.messages.push(ChatMessage::Error(e.to_string()));
-            self.state = TuiState::Error(e.to_string());
-        }
-
-        Ok(())
+        // Возвращаем запрос, который фоновая задача выполнит
+        Some(ApiRequest {
+            prev_state,
+            session_id,
+            config,
+            text: normalized,
+        })
     }
 
-    async fn _start_session(&mut self, task: &str) -> Result<()> {
-        self.messages
-            .push(ChatMessage::System(format!("📝 Задача: {}", task)));
+    // ─── Async: обработка результата из фоновой задачи ───────────────────────
 
-        let resp = api::start_session(&self.config, task).await?;
+    /// Вызывается когда фоновая задача прислала ответ.
+    pub fn handle_api_event(&mut self, event: ApiEvent) {
+        match event {
+            ApiEvent::Response(resp) => self._apply_response(resp),
+            ApiEvent::Error(err) => {
+                self.messages.push(ChatMessage::Error(err.clone()));
+                self.state = TuiState::Error(err);
+            }
+        }
+    }
+
+    fn _apply_response(&mut self, resp: GenerateResponse) {
         self.session_id = Some(resp.session_id.clone());
 
         match resp.state.as_str() {
             "awaiting_plan_confirmation" => {
-                if let Some(plan) = resp.plan {
-                    self.current_plan = Some(plan.clone());
-                    self.messages.push(ChatMessage::Plan(plan));
-                }
-                self.messages.push(ChatMessage::System(format!(
-                    "💬 {}",
-                    resp.message
-                )));
-                self.state = TuiState::AwaitingPlan;
-            }
-            _ => {
-                self._handle_unexpected_state(&resp)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn _send_response(&mut self, user_response: &str) -> Result<()> {
-        let sid = self
-            .session_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Нет session_id"))?;
-
-        let resp = api::send_response(&self.config, sid, user_response).await?;
-        self.session_id = Some(resp.session_id.clone());
-
-        match resp.state.as_str() {
-            "awaiting_plan_confirmation" => {
-                // План обновлён по фидбеку
                 if let Some(plan) = resp.plan {
                     self.current_plan = Some(plan.clone());
                     self.messages.push(ChatMessage::Plan(plan));
@@ -169,15 +156,12 @@ impl App {
                 self.state = TuiState::Done;
             }
             _ => {
-                self._handle_unexpected_state(&resp)?;
+                self._handle_unexpected_state(&resp);
             }
         }
-
-        Ok(())
     }
 
-    fn _handle_unexpected_state(&mut self, resp: &api::GenerateResponse) -> Result<()> {
-        // Если вернулся неожиданный state — просто покажем что есть
+    fn _handle_unexpected_state(&mut self, resp: &GenerateResponse) {
         if let Some(plan) = &resp.plan {
             self.current_plan = Some(plan.clone());
             self.messages.push(ChatMessage::Plan(plan.clone()));
@@ -200,7 +184,6 @@ impl App {
                 resp.sandbox_feedback.clone().unwrap_or_default(),
             ));
         }
-        // Определяем состояние по содержимому
         if resp.state == "done" {
             self.state = TuiState::Done;
         } else if resp.code.is_some() {
@@ -208,7 +191,6 @@ impl App {
         } else {
             self.state = TuiState::AwaitingPlan;
         }
-        Ok(())
     }
 
     pub fn clear_history(&mut self) {
@@ -239,5 +221,34 @@ impl App {
         if self.scroll_offset > 0 {
             self.scroll_offset -= 1;
         }
+    }
+}
+
+// ─── Данные для фоновой задачи (владеющие типы, Send) ────────────────────────
+
+pub struct ApiRequest {
+    pub prev_state: TuiState,
+    pub session_id: Option<String>,
+    pub config: Config,
+    pub text: String,
+}
+
+/// Выполняет API-запрос в фоне. Вызывается из `tokio::spawn`.
+pub async fn execute_api_request(req: ApiRequest) -> ApiEvent {
+    let result: Result<GenerateResponse> = match &req.prev_state {
+        TuiState::EnterTask => api::start_session(&req.config, &req.text).await,
+        TuiState::AwaitingPlan | TuiState::AwaitingCode => {
+            let sid = match req.session_id.as_deref() {
+                Some(s) => s,
+                None => return ApiEvent::Error("Нет session_id".into()),
+            };
+            api::send_response(&req.config, sid, &req.text).await
+        }
+        _ => return ApiEvent::Error(format!("Неожиданное состояние: {:?}", req.prev_state)),
+    };
+
+    match result {
+        Ok(resp) => ApiEvent::Response(resp),
+        Err(e) => ApiEvent::Error(e.to_string()),
     }
 }
