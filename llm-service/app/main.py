@@ -131,38 +131,38 @@ async def validate_code(
 ):
     """Validate code in sandbox with retry loop."""
     print(
-        "[validate_code] start",
+        "[validate] start",
         {
             "retries": count_of_retries,
-            "plan_len": len(plan or ""),
-            "user_task_len": len(user_task or ""),
-            "current_code_len": len(current_code or ""),
+            "plan": len(plan or ""),
+            "task": len(user_task or ""),
+            "code": len(current_code or ""),
         },
     )
     sandbox_resp = await send_code_for_validation(current_code, context)
     sandbox_feedback = extract_validation_feedback(sandbox_resp)
     print(
-        "[validate_code] initial_sandbox_result",
+        "[validate] initial",
         {
             "ok": sandbox_feedback is True,
-            "feedback": sandbox_feedback if sandbox_feedback is not True else None,
+            "fb_len": 0 if sandbox_feedback is True else len(str(sandbox_feedback)),
         },
     )
     for attempt in range(1, count_of_retries + 1):
         print(
-            "[validate_code] loop_iteration",
+            "[validate] loop",
             {
-                "attempt": attempt,
-                "sandbox_ok_before_attempt": sandbox_feedback is True,
+                "try": attempt,
+                "ok": sandbox_feedback is True,
             },
         )
         if sandbox_feedback is not True:
             print(
-                "[validate_code] regenerating_after_sandbox_error",
+                "[validate] regen",
                 {
-                    "attempt": attempt,
-                    "feedback": sandbox_feedback,
-                    "current_code_len": len(current_code or ""),
+                    "try": attempt,
+                    "fb_len": len(str(sandbox_feedback)),
+                    "code": len(current_code or ""),
                 },
             )
             fixed_code = await pipeline._generate_code(
@@ -174,37 +174,37 @@ async def validate_code(
             raw_fixed = _strip_code_block(fixed_code)
             current_code = raw_fixed
             print(
-                "[validate_code] regenerated_code",
+                "[validate] code",
                 {
-                    "attempt": attempt,
-                    "raw_fixed_len": len(raw_fixed or ""),
+                    "try": attempt,
+                    "len": len(raw_fixed or ""),
                 },
             )
             sandbox_resp = await send_code_for_validation(raw_fixed, context)
             sandbox_feedback = extract_validation_feedback(sandbox_resp)
             print(
-                "[validate_code] sandbox_result_after_regeneration",
+                "[validate] after",
                 {
-                    "attempt": attempt,
+                    "try": attempt,
                     "ok": sandbox_feedback is True,
-                    "feedback": sandbox_feedback if sandbox_feedback is not True else None,
+                    "fb_len": 0 if sandbox_feedback is True else len(str(sandbox_feedback)),
                 },
             )
         else:
             print(
-                "[validate_code] success_return",
+                "[validate] ok",
                 {
-                    "attempt": attempt,
-                    "current_code_len": len(current_code or ""),
+                    "try": attempt,
+                    "code": len(current_code or ""),
                 },
             )
             return True, current_code, None
     else:
         print(
-            "[validate_code] exhausted_retries",
+            "[validate] fail",
             {
-                "final_feedback": sandbox_feedback,
-                "final_code_len": len(current_code or ""),
+                "fb_len": len(str(sandbox_feedback)),
+                "code": len(current_code or ""),
             },
         )
         return (
@@ -220,18 +220,18 @@ async def validate_code(
 async def _handle_plan_generation(session: SessionData) -> GenerateResponse:
     """Step 1 — generate initial plan."""
     print(
-        "[plan_generation] start",
+        "[plan] gen",
         {
-            "task_len": len(session.user_task or ""),
+            "task": len(session.user_task or ""),
         },
     )
     plan = await pipeline._generate_plan(session.user_task)
     session.plan = plan
     session.state = SessionState.AWAITING_PLAN_CONFIRMATION
     print(
-        "[plan_generation] done",
+        "[plan] done",
         {
-            "plan_len": len(plan or ""),
+            "plan": len(plan or ""),
             "state": session.state,
         },
     )
@@ -249,11 +249,11 @@ async def _handle_plan_revision(
     """Step 2 — revise plan based on user feedback (loopable)."""
     session.plan_revision_count += 1
     print(
-        "[plan_revision] start",
+        "[plan] rev",
         {
-            "revision": session.plan_revision_count,
-            "previous_plan_len": len(session.plan or ""),
-            "user_feedback": user_feedback,
+            "ver": session.plan_revision_count,
+            "plan": len(session.plan or ""),
+            "fb": len(user_feedback or ""),
         },
     )
     refined_plan = await pipeline._generate_plan(
@@ -262,10 +262,10 @@ async def _handle_plan_revision(
     session.plan = refined_plan
     session.state = SessionState.AWAITING_PLAN_CONFIRMATION
     print(
-        "[plan_revision] done",
+        "[plan] done",
         {
-            "revision": session.plan_revision_count,
-            "new_plan_len": len(refined_plan or ""),
+            "ver": session.plan_revision_count,
+            "plan": len(refined_plan or ""),
             "state": session.state,
         },
     )
@@ -283,12 +283,12 @@ async def _handle_code_generation(
     """Step 3 — generate code from confirmed plan, run sandbox, run Ollama critic, then return to user."""
     session.state = SessionState.GENERATING_CODE
     print(
-        "[code_generation] start",
+        "[code] gen",
         {
-            "task_len": len(session.user_task or ""),
-            "plan_len": len(session.plan or ""),
-            "rag_context_len": len(session.rag_context or ""),
-            "llm_validation": llm_validation,
+            "task": len(session.user_task or ""),
+            "plan": len(session.plan or ""),
+            "rag": len(session.rag_context or ""),
+            "llm": llm_validation,
         },
     )
     code = await pipeline._generate_code(session.plan, session.user_task)
@@ -297,9 +297,9 @@ async def _handle_code_generation(
     session.code_revision_count = 0
     session.sandbox_feedback = ""
     print(
-        "[code_generation] raw_code_generated",
+        "[code] raw",
         {
-            "raw_code_len": len(raw_code or ""),
+            "len": len(raw_code or ""),
         },
     )
 
@@ -316,10 +316,10 @@ async def _handle_code_generation(
     )
     if successfull_validation is not True:
         print(
-            "[code_generation] sandbox_failed",
+            "[code] sandbox_fail",
             {
-                "sandbox_feedback": sandbox_feedback,
-                "current_code_len": len(session.current_code or ""),
+                "fb_len": len(str(sandbox_feedback)),
+                "code": len(session.current_code or ""),
             },
         )
         session.state = SessionState.AWAITING_CODE_APPROVAL
@@ -336,10 +336,10 @@ async def _handle_code_generation(
     if llm_validation:
         critic_result = await pipeline._critique_code(session.current_code, rag_data=session.rag_context)
         print(
-            "[code_generation] critic_result",
+            "[code] critic",
             {
-                "accepted": critic_result.strip().upper() == CONFIRM_WORD,
-                "critic_result": critic_result,
+                "ok": critic_result.strip().upper() == CONFIRM_WORD,
+                "len": len(critic_result or ""),
             },
         )
         if critic_result.strip().upper() != CONFIRM_WORD:
@@ -355,10 +355,10 @@ async def _handle_code_generation(
 
     session.state = SessionState.AWAITING_CODE_APPROVAL
     print(
-        "[code_generation] done",
+        "[code] done",
         {
             "state": session.state,
-            "current_code_len": len(session.current_code or ""),
+            "code": len(session.current_code or ""),
         },
     )
     return GenerateResponse(
@@ -376,15 +376,15 @@ async def _handle_code_revision(
     """Step 4 — revise code based on user feedback (loopable), then sandbox + Ollama critic."""
     session.code_revision_count += 1
     print(
-        "[code_revision] start",
+        "[code] rev",
         {
-            "revision": session.code_revision_count,
-            "user_feedback": user_feedback,
-            "task_len": len(session.user_task or ""),
-            "plan_len": len(session.plan or ""),
-            "previous_code_len": len(session.current_code or ""),
-            "rag_context_len": len(session.rag_context or ""),
-            "llm_validation": llm_validation,
+            "ver": session.code_revision_count,
+            "fb": len(user_feedback or ""),
+            "task": len(session.user_task or ""),
+            "plan": len(session.plan or ""),
+            "prev": len(session.current_code or ""),
+            "rag": len(session.rag_context or ""),
+            "llm": llm_validation,
         },
     )
 
@@ -397,20 +397,19 @@ async def _handle_code_revision(
     raw_revised = _strip_code_block(revised_code)
     session.current_code = raw_revised
     print(
-        "[code_revision] revised_code_generated",
+        "[code] revised",
         {
-            "revision": session.code_revision_count,
-            "revised_code_len": len(raw_revised or ""),
+            "ver": session.code_revision_count,
+            "len": len(raw_revised or ""),
         },
     )
 
     # --- Pass 1: Rust sandbox ---
     print(
-        "[code_revision] validate_code_call",
+        "[code] revalidate",
         {
-            "revision": session.code_revision_count,
-            "validate_task_preview": (user_feedback + " " + session.user_task)[:500],
-            "validate_task_len": len((user_feedback + " " + session.user_task) or ""),
+            "ver": session.code_revision_count,
+            "task": len(session.user_task or ""),
         },
     )
     successfull_validation, session.current_code, sandbox_feedback = (
@@ -419,17 +418,17 @@ async def _handle_code_revision(
             pipeline,
             CODE_RETRIES_SANDBOX,
             session.plan,
-            user_feedback + " " + session.user_task,
+            session.user_task,
             session.context,
         )
     )
     if successfull_validation is not True:
         print(
-            "[code_revision] sandbox_failed",
+            "[code] sandbox_fail",
             {
-                "revision": session.code_revision_count,
-                "sandbox_feedback": sandbox_feedback,
-                "current_code_len": len(session.current_code or ""),
+                "ver": session.code_revision_count,
+                "fb_len": len(str(sandbox_feedback)),
+                "code": len(session.current_code or ""),
             },
         )
         session.state = SessionState.AWAITING_CODE_APPROVAL
@@ -447,11 +446,11 @@ async def _handle_code_revision(
     if llm_validation:
         critic_result = await pipeline._critique_code(session.current_code, rag_data=session.rag_context)
         print(
-            "[code_revision] critic_result",
+            "[code] critic",
             {
-                "revision": session.code_revision_count,
-                "accepted": critic_result.strip().upper() == CONFIRM_WORD,
-                "critic_result": critic_result,
+                "ver": session.code_revision_count,
+                "ok": critic_result.strip().upper() == CONFIRM_WORD,
+                "len": len(critic_result or ""),
             },
         )
         if critic_result.strip().upper() != CONFIRM_WORD:
@@ -467,11 +466,11 @@ async def _handle_code_revision(
     msg = f"Код обновлён (версия {session.code_revision_count})."
     msg += " Подтвердите или укажите исправления."
     print(
-        "[code_revision] done",
+        "[code] done",
         {
-            "revision": session.code_revision_count,
+            "ver": session.code_revision_count,
             "state": session.state,
-            "current_code_len": len(session.current_code or ""),
+            "code": len(session.current_code or ""),
         },
     )
 
@@ -491,14 +490,14 @@ async def _handle_code_revision(
 async def generate(req: GenerateRequest):
     sid, session, is_new = _get_or_create_session(req)
     print(
-        "[generate] request",
+        "[req]",
         {
-            "session_id": sid,
+            "sid": sid,
             "is_new": is_new,
-            "state_before": session.state,
-            "task_len": len(req.task or ""),
-            "user_response": req.user_response,
-            "llm_validation": req.llm_validation,
+            "state": session.state,
+            "task": len(req.task or ""),
+            "resp": len(req.user_response or ""),
+            "llm": req.llm_validation,
         },
     )
 
@@ -508,21 +507,21 @@ async def generate(req: GenerateRequest):
             session.user_task = req.task
             session.context = context
             print(
-                "[generate] parsed_new_session_context",
+                "[req] parsed",
                 {
-                    "raw_task_len": len(req.task or ""),
-                    "clean_task_len": len(clean_task or ""),
-                    "context_keys": list(context.keys()) if isinstance(context, dict) else None,
+                    "raw": len(req.task or ""),
+                    "clean": len(clean_task or ""),
+                    "ctx": list(context.keys()) if isinstance(context, dict) else None,
                 },
             )
         except ParseError as e:
             session.user_task = req.task  # fallback to raw task
             session.context = {"wf": {"vars": {}, "initVariables": {}}}
             print(
-                "[generate] parse_error_fallback",
+                "[req] parse_fail",
                 {
-                    "error": str(e),
-                    "task_len": len(req.task or ""),
+                    "err": str(e),
+                    "task": len(req.task or ""),
                 },
             )
 
@@ -570,14 +569,14 @@ async def generate(req: GenerateRequest):
 
     result.session_id = sid
     print(
-        "[generate] response",
+        "[resp]",
         {
-            "session_id": sid,
-            "state_after": result.state,
-            "has_plan": result.plan is not None,
-            "has_code": result.code is not None,
-            "sandbox_feedback": result.sandbox_feedback,
-            "message": result.message,
+            "sid": sid,
+            "state": result.state,
+            "plan": result.plan is not None,
+            "code": result.code is not None,
+            "fb_len": 0 if not result.sandbox_feedback else len(result.sandbox_feedback),
+            "msg": len(result.message or ""),
         },
     )
     return result
