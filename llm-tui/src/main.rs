@@ -15,9 +15,17 @@ use tokio::sync::mpsc;
 use anyhow::Result;
 
 use crate::app::App;
+use crate::app::TuiState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Инициализация логгера
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info")
+    ).init();
+
+    log::info!("=== llm-tui запущен ===");
+
     // Инициализация терминала
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -80,7 +88,15 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                                     }
                                 }
                                 KeyCode::F(4) => {
-                                    app.clear_history();
+                                    // Если загрузка — просто сбросим состояние, иначе полная очистка
+                                    if app.state == TuiState::Loading {
+                                        app.state = TuiState::EnterTask;
+                                        app.messages.push(app::ChatMessage::System(
+                                            "⚠️ Запрос отменён".to_string()
+                                        ));
+                                    } else {
+                                        app.clear_history();
+                                    }
                                 }
                                 KeyCode::Up => {
                                     app.scroll_up();

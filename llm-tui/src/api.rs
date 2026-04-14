@@ -2,6 +2,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use crate::config::Config;
+use std::time::Duration;
 
 /// Структуры точно соответствуют backend API: llm-service/app/main.py
 
@@ -53,8 +54,24 @@ impl GenerateRequest {
 }
 
 pub async fn generate(config: &Config, req: &GenerateRequest) -> Result<GenerateResponse> {
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(300)) // 5 минут на запрос
+        .build()?;
+    
     let url = config.generate_url();
+    
+    // Логирование запроса
+    log::info!("Отправка запроса на {}", url);
+    if let Some(ref sid) = req.session_id {
+        log::info!("  session_id: {}", sid);
+    }
+    if !req.task.is_empty() {
+        log::info!("  task: {} (символов: {})", req.task.chars().take(50).collect::<String>(), req.task.len());
+    }
+    if !req.user_response.is_empty() {
+        log::info!("  user_response: {}", req.user_response);
+    }
+    log::info!("  llm_validation: {:?}", req.llm_validation);
 
     let response = client
         .post(&url)
@@ -65,10 +82,25 @@ pub async fn generate(config: &Config, req: &GenerateRequest) -> Result<Generate
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
+        log::error!("Сервер вернул ошибку: {} — {}", status, body);
         anyhow::bail!("Сервер вернул ошибку: {} — {}", status, body);
     }
 
     let resp: GenerateResponse = response.json().await?;
+    
+    // Логирование ответа
+    log::info!("Получен ответ: state={}, session_id={}", resp.state, resp.session_id);
+    if let Some(ref plan) = resp.plan {
+        log::info!("  plan: {} символов", plan.len());
+    }
+    if let Some(ref code) = resp.code {
+        log::info!("  code: {} символов", code.len());
+    }
+    if let Some(ref fb) = resp.sandbox_feedback {
+        log::info!("  sandbox_feedback: {} символов", fb.len());
+    }
+    log::info!("  message: {}", resp.message);
+
     Ok(resp)
 }
 
