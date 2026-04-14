@@ -2,57 +2,17 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
+    volumes:
+      - ./data/ollama:/root/.ollama
     ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_KEEP_ALIVE=24h
-    command: ["serve"]
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 5m
-    restart: unless-stopped
-
-  ollama-init:
-    image: ollama/ollama:latest
-    container_name: ollama-init
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-      MODEL_NAME: qwen2.5-coder:7b
-    volumes:
-      - ollama_data:/root/.ollama
-    entrypoint: ["/bin/sh", "-euxc"]
+      - 11434:11434
+    entrypoint: ["/bin/sh", "-c"]
     command: |
-      model="$${MODEL_NAME:?MODEL_NAME not set}"
-
-      echo "waiting for Ollama to become reachable..."
-      for i in $$(seq 1 30); do
-        if ollama list >/dev/null 2>&1; then
-          break
-        fi
-        echo "ollama not ready yet ($$i/30)"
-        sleep 2
-      done
-
-      echo "checking whether model already exists..."
-      if ollama list | awk 'NR>1 {print $$1}' | grep -Fxq "$$model"; then
-        echo "model already present: $$model"
-      else
-        echo "pulling model: $$model"
-        ollama pull "$$model"
-      fi
-
-      echo "verifying model installation..."
-      ollama list | awk 'NR>1 {print $$1}' | grep -Fxq "$$model"
-      echo "done"
-    restart: "no"
+      ollama serve &
+      sleep 10
+      ollama pull qwen2.5-coder:7b
+      tail -f /dev/null
+    restart: unless-stopped
 
   sandbox-service:
     build:
@@ -74,12 +34,22 @@ services:
       - SANDBOX_SERVICE_URL=http://sandbox-service:6778
     depends_on:
       ollama:
-        condition: service_healthy
+        condition: service_started
       sandbox-service:
         condition: service_started
-      ollama-init:
-        condition: service_completed_successfully
     restart: unless-stopped
 
+  llm-tui:
+    build:
+      context: ./llm-tui
+    container_name: llm-tui
+    stdin_open: true
+    tty: true
+    depends_on:
+      llm-service:
+        condition: service_started
+    restart: "no"
 volumes:
   ollama_data:
+
+  
