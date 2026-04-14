@@ -1,55 +1,97 @@
+version: "3.9"
+
 services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    networks:
+      - backend
     volumes:
-      - ./data/ollama:/root/.ollama
-    ports:
-      - 11434:11434
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      ollama serve &
-      sleep 10
-      ollama pull qwen2.5-coder:7b
-      tail -f /dev/null
-    restart: unless-stopped
+      - ollama_data:/root/.ollama
 
-  sandbox-service:
-    build:
-      context: ./sandbox-service
-    container_name: sandbox-service
-    ports:
-      - "6778:6778"
-    privileged: true
-    restart: unless-stopped
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ollama-init
+    depends_on:
+      - ollama
+    networks:
+      - backend
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: >
+      sh -c "
+        echo 'Waiting for Ollama API...' &&
+        until ollama list > /dev/null 2>&1; do
+          sleep 2;
+        done &&
+        echo 'Ollama is ready. Pulling model...' &&
+        ollama pull qwen2.5-coder:7b &&
+        echo 'Model pulled successfully.'
+      "
+    restart: "no"
 
   llm-service:
     build:
       context: ./llm-service
     container_name: llm-service
+    restart: unless-stopped
     ports:
       - "8080:8080"
-    environment:
-      - OLLAMA_URL=http://ollama:11434
-      - SANDBOX_SERVICE_URL=http://sandbox-service:6778
+    networks:
+      - backend
     depends_on:
-      ollama:
-        condition: service_started
       sandbox-service:
         condition: service_started
+      ollama-init:
+         condition: service_completed_successfully
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+    #   interval: 10s
+    #   timeout: 3s
+    #   retries: 5
+    #   start_period: 10s
+
+  sandbox-service:
+    build:
+      context: ./sandbox-service
+    container_name: sandbox-service
     restart: unless-stopped
+    ports:
+      - "6778:6778"
+    networks:
+      - backend
+    privileged: true
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:6778/health || exit 1"]
+    #   interval: 10s
+    #   timeout: 3s
+    #   retries: 5
+    #   start_period: 10s
 
   llm-tui:
     build:
       context: ./llm-tui
     container_name: llm-tui
+    restart: unless-stopped
+    networks:
+      - backend
+    depends_on:
+      - llm-service
+      
+    privileged: true
+    environment:
+      - LLM_SERVICE_URL=http://llm-service:8080
     stdin_open: true
     tty: true
-    depends_on:
-      llm-service:
-        condition: service_started
-    restart: "no"
+
 volumes:
   ollama_data:
 
-  
+networks:
+  backend:
+    driver: bridge
