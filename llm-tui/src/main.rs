@@ -3,8 +3,10 @@ mod api;
 mod config;
 mod ui;
 
-use std::io;
 use std::fs::OpenOptions;
+use std::io;
+
+use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -13,13 +15,10 @@ use crossterm::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
-use anyhow::Result;
+use tokio::task::JoinHandle;
 
-use crate::app::App;
-use crate::app::TuiState;
-use crate::app::Event as TuiEvent;
+use crate::app::{App, AppEvent, Effect, KeyAction};
 
-/// Инициализирует логгер, записывающий логи в файл вместо stdout.
 fn init_file_logger() {
     let log_file = OpenOptions::new()
         .create(true)
@@ -27,11 +26,9 @@ fn init_file_logger() {
         .open("llm-tui.log")
         .expect("Не удалось создать файл лога llm-tui.log");
 
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    )
-    .target(env_logger::Target::Pipe(Box::new(log_file)))
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
+        .init();
 }
 
 #[tokio::main]
@@ -39,31 +36,29 @@ async fn main() -> Result<()> {
     init_file_logger();
     log::info!("=== llm-tui запущен (логи пишутся в llm-tui.log) ===");
 
-    // Инициализация терминала: alternate screen + raw mode
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    execute!(stdout, crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
+    execute!(
+        stdout,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Паника-безопасное восстановление терминала
     std::panic::set_hook(Box::new(|panic_info| {
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         eprintln!("PANIC: {}", panic_info);
     }));
 
-    // Запуск приложения
     let result = run_app(&mut terminal).await;
 
-    // Восстановление терминала: raw mode off + leave alternate screen
     std::panic::set_hook(Box::new(|_| {}));
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    // Ошибка выводится ТОЛЬКО после выхода из alternate screen
     if let Err(err) = result {
         eprintln!("Ошибка: {}", err);
         std::process::exit(1);
@@ -75,134 +70,98 @@ async fn main() -> Result<()> {
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     let mut app = App::new();
 
-    // Канал для результатов фоновых задач: worker → UI
-    let (resp_tx, mut resp_rx) = mpsc::channel::<crate::app::ApiEvent>(8);
-    let (event_tx, mut event_rx) = mpsc::channel::<TuiEvent>(8);
+    let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(64);
+    spawn_input_reader(event_tx.clone());
 
-    loop {
-        // ─── Отрисовка — всегда, без блокировок ──────────────────────────
-        terminal.draw(|frame| {
-            crate::ui::render(frame, &app);
-        })?;
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    let mut active_request: Option<JoinHandle<()>> = None;
+    let mut should_quit = false;
 
-        // ─── Обработка событий ─────────────────────────────────────────────
-        // Приоритет: API response → User input
-        
+    while !should_quit {
+        terminal.draw(|frame| ui::render(frame, &app))?;
+
         tokio::select! {
-            // Фоновая задача прислала результат
-            Some(api_event) = resp_rx.recv() => {
-                let result = match api_event {
-                    crate::app::ApiEvent::Response(resp) => Ok(resp),
-                    crate::app::ApiEvent::Error(err) => Err(err),
-                };
-                process_event(&mut app, TuiEvent::ApiResponse(result));
+            _ = tick.tick() => {
+                app.handle_event(AppEvent::Tick);
             }
-
-            // Событие от UI (отправлено через handle_key)
             Some(event) = event_rx.recv() => {
-                process_user_event(&mut app, &resp_tx, event);
+                let effect = app.handle_event(event);
+                should_quit = apply_effect(effect, &event_tx, &mut active_request);
             }
+        }
+    }
 
-            // Ввод пользователя с таймаутом для поддержания цикла
-            result = tokio::time::timeout(
-                std::time::Duration::from_millis(50),
-                tokio::task::spawn_blocking(|| event::poll(std::time::Duration::from_millis(50)))
-            ) => {
-                if let Ok(Ok(Ok(true))) = result {
-                    if let Event::Key(key) = event::read()? {
-                        if key.kind == KeyEventKind::Press {
-                            // Преобразуем ввод в событие и отправляем в канал
-                            handle_key_to_event(&mut app, key.code, &event_tx);
-                        }
+    if let Some(handle) = active_request.take() {
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    Ok(())
+}
+
+fn spawn_input_reader(event_tx: mpsc::Sender<AppEvent>) {
+    tokio::task::spawn_blocking(move || loop {
+        match event::read() {
+            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                if let Some(action) = map_key_to_action(key.code) {
+                    if event_tx.blocking_send(AppEvent::Key(action)).is_err() {
+                        break;
                     }
                 }
             }
-        }
-    }
-}
-
-/// Обработка события от пользователя (из канала)
-fn process_user_event(app: &mut App, resp_tx: &mpsc::Sender<crate::app::ApiEvent>, event: TuiEvent) {
-    match event {
-        TuiEvent::UserInput(text) => {
-            // Игнорируем ввод во время загрузки
-            if app.state == TuiState::Loading {
-                log::warn!("User input ignored: state is Loading");
-                return;
-            }
-
-            // Создаём запрос (submit_message проверяет состояние и валидность)
-            if let Some(api_req) = app.submit_message_sync(&text) {
-                let tx = resp_tx.clone();
-                tokio::spawn(async move {
-                    let event = crate::app::execute_api_request(api_req).await;
-                    let _ = tx.send(event).await;
-                });
+            Ok(_) => {}
+            Err(err) => {
+                log::error!("Input reader failed: {}", err);
+                break;
             }
         }
-        TuiEvent::ApiResponse(_) => {
-            // Этот кейс обрабатывается в главном цикле напрямую
-        }
-    }
+    });
 }
 
-/// Преобразование нажатия клавиши в событие и отправка в канал
-fn handle_key_to_event(app: &mut App, code: KeyCode, event_tx: &mpsc::Sender<TuiEvent>) {
+fn map_key_to_action(code: KeyCode) -> Option<KeyAction> {
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => {
-            std::process::exit(0);
-        }
-        KeyCode::Enter => {
-            // Отправляем событие вместо прямой обработки
-            let input = app.input.clone();
-            let _ = event_tx.try_send(TuiEvent::UserInput(input));
-        }
-        KeyCode::Char(c) => {
-            app.input.push(c);
-        }
-        KeyCode::Backspace => {
-            app.input.pop();
-        }
-        KeyCode::F(3) => {
-            if let Err(e) = app.copy_last_code() {
-                app.messages.push(crate::app::ChatMessage::Error(e.to_string()));
-            }
-        }
-        KeyCode::F(4) => {
-            if app.state == TuiState::Loading {
-                app.state = TuiState::EnterTask;
-                app.messages.push(crate::app::ChatMessage::System(
-                    "⚠️ Запрос отменён".to_string()
-                ));
-            } else {
-                app.clear_history();
-            }
-        }
-        KeyCode::Up => {
-            app.scroll_up();
-        }
-        KeyCode::Down => {
-            app.scroll_down();
-        }
-        _ => {}
+        KeyCode::Char('q') | KeyCode::Esc => Some(KeyAction::Quit),
+        KeyCode::Enter => Some(KeyAction::Submit),
+        KeyCode::Char(c) => Some(KeyAction::InsertChar(c)),
+        KeyCode::Backspace => Some(KeyAction::Backspace),
+        KeyCode::F(3) => Some(KeyAction::CopyLastCode),
+        KeyCode::F(4) => Some(KeyAction::CancelOrReset),
+        KeyCode::Up => Some(KeyAction::ScrollUp),
+        KeyCode::Down => Some(KeyAction::ScrollDown),
+        _ => None,
     }
 }
 
-/// Обработка API ответа — вызывается в главном цикле
-fn process_event(app: &mut App, event: TuiEvent) {
-    match event {
-        TuiEvent::ApiResponse(result) => {
-            match result {
-                Ok(resp) => {
-                    app.handle_response(resp);
-                }
-                Err(err) => {
-                    log::error!("API Error: {}", err);
-                    app.messages.push(crate::app::ChatMessage::Error(err.clone()));
-                    app.state = TuiState::Error(err);
-                }
+fn apply_effect(
+    effect: Effect,
+    event_tx: &mpsc::Sender<AppEvent>,
+    active_request: &mut Option<JoinHandle<()>>,
+) -> bool {
+    match effect {
+        Effect::None => false,
+        Effect::StartRequest(api_req) => {
+            if let Some(handle) = active_request.take() {
+                handle.abort();
             }
+
+            let tx = event_tx.clone();
+            *active_request = Some(tokio::spawn(async move {
+                let result = crate::app::execute_api_request(api_req).await;
+                let _ = tx.send(AppEvent::Api(result)).await;
+            }));
+            false
         }
-        TuiEvent::UserInput(_) => {}
+        Effect::CancelRequest => {
+            if let Some(handle) = active_request.take() {
+                handle.abort();
+            }
+            false
+        }
+        Effect::Quit => {
+            if let Some(handle) = active_request.take() {
+                handle.abort();
+            }
+            true
+        }
     }
 }

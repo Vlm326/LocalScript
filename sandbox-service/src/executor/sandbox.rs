@@ -3,6 +3,7 @@ use serde_json::Value as JsonValue;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::{task, time};
+use tracing::{debug, info, warn};
 pub struct ExecutionResult {
     pub output: Option<String>,
     pub logs: Vec<String>,
@@ -169,6 +170,7 @@ fn inject_wf_context(lua: &Lua, context: &JsonValue) -> mlua::Result<()> {
 }
 
 pub fn start_lua_sandbox(tx: mpsc::Sender<String>, context: JsonValue) -> mlua::Result<Lua> {
+    debug!("lua: sandbox_init_started");
     let lua = Lua::new();
     lua.set_memory_limit(8 * 1024 * 1024)?;
 
@@ -197,6 +199,7 @@ pub fn start_lua_sandbox(tx: mpsc::Sender<String>, context: JsonValue) -> mlua::
     })?;
     globals.set("warn", warn_fn)?;
 
+    debug!("lua: sandbox_init_ok");
     Ok(lua)
 }
 
@@ -205,6 +208,7 @@ pub async fn execute_lua_code(
     timeout_secs: u64,
     context: JsonValue,
 ) -> ExecutionResult {
+    info!(timeout_secs, code_len = code.len(), "lua: execute_started");
     let timeout = Duration::from_secs(timeout_secs);
     let (tx, mut rx) = mpsc::channel::<String>(128);
 
@@ -218,6 +222,7 @@ pub async fn execute_lua_code(
             Ok(lua) => lua,
             Err(e) => {
                 let _ = tx.try_send(format!("[fatal] sandbox init failed: {e}"));
+                warn!(err = %e, "lua: sandbox_init_failed");
                 return Err((
                     StructuredError {
                         kind: ErrorKind::Unknown,
@@ -243,6 +248,7 @@ pub async fn execute_lua_code(
             move |_, _| {
                 if start.elapsed() > timeout {
                     let _ = tx_hook.try_send("[exec] hook: timed out".to_string());
+                    debug!("lua: hook_timeout_triggered");
                     return Err(LuaError::RuntimeError("Execution timed out".to_string()));
                 }
                 Ok(VmState::Continue)
@@ -256,6 +262,11 @@ pub async fn execute_lua_code(
                 let memory = lua.used_memory();
                 let elapsed = exec_start.elapsed();
                 let _ = tx.try_send(format!("[exec] memory used: {memory} bytes"));
+                info!(
+                    memory_bytes = memory,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "lua: execute_ok"
+                );
                 let output = if values.is_empty() {
                     None
                 } else {
@@ -275,6 +286,14 @@ pub async fn execute_lua_code(
                 if let Some(ref snippet) = structured.snippet {
                     let _ = tx.try_send(format!("[error] snippet:\n{snippet}"));
                 }
+                info!(
+                    kind = ?structured.kind,
+                    line = structured.line,
+                    memory_bytes = memory,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "lua: execute_err"
+                );
+                debug!(raw = %structured.raw, "lua: execute_err_raw");
                 drop(tx);
                 Err((structured, elapsed, memory as u64))
             }

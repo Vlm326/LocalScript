@@ -3,21 +3,15 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
-use crate::app::{App, ChatMessage, TuiState};
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+use crate::app::{App, ChatMessage, DisplayState, TuiState};
 
 static SPINNER_FRAMES: &[char] = &['⠋', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-const SIDEBAR_WIDTH_RATIO: u16 = 25; // percent
-
-// Base style applied to every widget to prevent background bleed
+const SIDEBAR_WIDTH_RATIO: u16 = 25;
 const BASE_STYLE: Style = Style::new().bg(Color::Reset);
-
-// ─── Message role definitions ────────────────────────────────────────────────
 
 struct RoleStyle {
     header: &'static str,
@@ -60,8 +54,6 @@ fn role_style(msg: &ChatMessage) -> RoleStyle {
     }
 }
 
-// ─── Reusable helpers ────────────────────────────────────────────────────────
-
 fn get_spinner_frame() -> char {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -70,93 +62,136 @@ fn get_spinner_frame() -> char {
     SPINNER_FRAMES[(elapsed / 100) as usize % SPINNER_FRAMES.len()]
 }
 
-fn state_label(state: &TuiState) -> (&'static str, Color) {
-    match state {
-        TuiState::EnterTask => ("🔵 EnterTask", Color::Gray),
-        TuiState::AwaitingPlan => ("🟡 AwaitingPlan", Color::Yellow),
-        TuiState::AwaitingCode => ("🟡 AwaitingCode", Color::Cyan),
-        TuiState::Done => ("🟢 Done", Color::Green),
-        TuiState::Loading => ("🟡 Loading", Color::Yellow),
-        TuiState::Error(_) => ("🔴 Error", Color::Red),
+fn state_label(display: DisplayState<'_>) -> (&'static str, Color) {
+    match display {
+        DisplayState::Loading => ("🟡 Loading", Color::Yellow),
+        DisplayState::Ready(state) => match state {
+            TuiState::EnterTask => ("🔵 EnterTask", Color::Gray),
+            TuiState::AwaitingPlan => ("🟡 AwaitingPlan", Color::Yellow),
+            TuiState::AwaitingCode => ("🟡 AwaitingCode", Color::Cyan),
+            TuiState::Done => ("🟢 Done", Color::Green),
+            TuiState::Error(_) => ("🔴 Error", Color::Red),
+        },
     }
 }
 
 fn input_placeholder(app: &App) -> &'static str {
+    if app.is_loading() {
+        return "";
+    }
     match &app.state {
         TuiState::EnterTask => "Введите задачу и нажмите Enter...",
         TuiState::AwaitingPlan => "Подтвердить / фидбек к плану...",
         TuiState::AwaitingCode => "Подтвердить / фидбек к коду...",
         TuiState::Done => "Сессия завершена. F4 — новая задача",
-        TuiState::Loading => "",
         TuiState::Error(_) => "Ошибка. F4 — новая задача",
     }
 }
 
-fn input_enabled(app: &App) -> bool {
-    matches!(
-        app.state,
-        TuiState::EnterTask
-            | TuiState::AwaitingPlan
-            | TuiState::AwaitingCode
-    )
-}
-
-// ─── Card-style message rendering ────────────────────────────────────────────
-
-fn render_message_card(msg: &ChatMessage) -> ListItem<'_> {
+fn message_lines(msg: &ChatMessage) -> Vec<Line<'static>> {
     let style = role_style(msg);
-
     let content = match msg {
-        ChatMessage::User(text) => text.clone(),
-        ChatMessage::System(text) => text.clone(),
-        ChatMessage::Plan(text) => text.clone(),
-        ChatMessage::Code(text) => text.clone(),
-        ChatMessage::Feedback(text) => text.clone(),
-        ChatMessage::Error(text) => text.clone(),
+        ChatMessage::User(text)
+        | ChatMessage::System(text)
+        | ChatMessage::Plan(text)
+        | ChatMessage::Code(text)
+        | ChatMessage::Feedback(text)
+        | ChatMessage::Error(text) => text,
     };
 
-    let lines: Vec<Line> = content
-        .lines()
-        .map(|l| {
-            Line::from(Span::styled(
-                format!("  {}", l),
-                Style::default().fg(style.text_color),
-            ))
-        })
-        .collect();
+    let mut out: Vec<Line<'static>> = Vec::new();
+    out.push(Line::from(Span::styled(
+        format!("─── {} ───", style.header),
+        Style::default()
+            .fg(style.border_color)
+            .add_modifier(Modifier::BOLD),
+    )));
 
-    // Build card-style rendering with header and indented content
-    let mut result: Vec<Line> = vec![
-        Line::from(Span::styled(
-            format!("─── {} ───", style.header),
-            Style::default()
-                .fg(style.border_color)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ];
-    result.extend(lines);
-    result.push(Line::from("")); // spacing between messages
+    for line in content.lines() {
+        out.push(Line::from(Span::styled(
+            format!("  {}", line),
+            Style::default().fg(style.text_color),
+        )));
+    }
 
-    ListItem::new(Text::from(result))
+    out.push(Line::from(""));
+    out
 }
 
-// ─── Sidebar rendering ───────────────────────────────────────────────────────
+pub fn render(frame: &mut Frame, app: &App) {
+    frame.render_widget(Clear, frame.area());
+
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Min(5),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(frame.area());
+
+    let top_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(100 - SIDEBAR_WIDTH_RATIO),
+            Constraint::Percentage(SIDEBAR_WIDTH_RATIO),
+        ])
+        .split(main_chunks[0]);
+
+    render_history(frame, app, top_chunks[0]);
+    render_sidebar(frame, app, top_chunks[1]);
+    render_input(frame, app, main_chunks[1]);
+    render_status_bar(frame, app, main_chunks[2]);
+}
+
+fn render_history(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" History ")
+        .borders(Borders::ALL)
+        .style(BASE_STYLE);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for msg in &app.messages {
+        lines.extend(message_lines(msg));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (нет сообщений)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let view_height = area.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(view_height) as u16;
+
+    // app.scroll_offset is "lines from bottom"; Paragraph::scroll is "lines from top"
+    let back = app.scroll_offset.min(max_scroll);
+    let scroll_top = max_scroll.saturating_sub(back);
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(block)
+        .scroll((scroll_top, 0))
+        .wrap(Wrap { trim: false })
+        .style(BASE_STYLE);
+
+    frame.render_widget(paragraph, area);
+}
 
 fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
-    let (state_label_text, state_color) = state_label(&app.state);
+    let (state_label_text, state_color) = state_label(app.status_state());
+    let sid_display = app.session_id.as_deref().unwrap_or("—");
 
-    let sid_display = app
-        .session_id
-        .as_deref()
-        .unwrap_or("—");
-
-    let hint_text = match &app.state {
-        TuiState::EnterTask => "Введите задачу для начала работы",
-        TuiState::AwaitingPlan => "Напишите фидбек или «Подтвердить»",
-        TuiState::AwaitingCode => "Напишите фидбек или «Подтвердить»",
-        TuiState::Done => "F3 — скопировать код, F4 — новая задача",
-        TuiState::Loading => "Ожидание ответа от сервера...",
-        TuiState::Error(_) => "Произошла ошибка. F4 — сброс",
+    let hint_text = if app.is_loading() {
+        "Ожидание ответа от сервера..."
+    } else {
+        match &app.state {
+            TuiState::EnterTask => "Введите задачу для начала работы",
+            TuiState::AwaitingPlan => "Напишите фидбек или «Подтвердить»",
+            TuiState::AwaitingCode => "Напишите фидбек или «Подтвердить»",
+            TuiState::Done => "F3 — скопировать код, F4 — новая задача",
+            TuiState::Error(_) => "Произошла ошибка. F4 — сброс",
+        }
     };
 
     let controls = "F3 Copy │ F4 Reset │ q Exit";
@@ -224,60 +259,8 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-// ─── Main layout and rendering ───────────────────────────────────────────────
-
-pub fn render(frame: &mut Frame, app: &App) {
-    // Clear entire frame before drawing — prevents background artifacts
-    frame.render_widget(Clear, frame.area());
-
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Min(5),     // history + sidebar
-            Constraint::Length(3),  // input
-            Constraint::Length(1),  // status bar
-        ])
-        .split(frame.area());
-
-    // Split top area into history and sidebar
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(100 - SIDEBAR_WIDTH_RATIO),
-            Constraint::Percentage(SIDEBAR_WIDTH_RATIO),
-        ])
-        .split(main_chunks[0]);
-
-    render_history(frame, app, top_chunks[0]);
-    render_sidebar(frame, app, top_chunks[1]);
-    render_input(frame, app, main_chunks[1]);
-    render_status_bar(frame, app, main_chunks[2]);
-}
-
-fn render_history(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" History ")
-        .borders(Borders::ALL)
-        .style(BASE_STYLE);
-
-    // Render messages in natural order (oldest → newest)
-    // scroll_offset=0 → newest messages visible
-    // scroll_offset>0 → scroll back through history
-    let total_messages = app.messages.len();
-    let end_idx = total_messages.saturating_sub(app.scroll_offset);
-
-    let mut items: Vec<ListItem> = Vec::new();
-    for msg in &app.messages[..end_idx] {
-        items.push(render_message_card(msg));
-    }
-
-    let list = List::new(items).block(block).style(BASE_STYLE);
-    frame.render_widget(list, area);
-}
-
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    let enabled = input_enabled(app);
+    let enabled = app.input_enabled();
     let placeholder = input_placeholder(app);
 
     let display_text = if app.input.is_empty() {
@@ -308,27 +291,21 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(input, area);
 
-    // Cursor: only when enabled
-    // Use UnicodeWidthStr::width() — NOT .len() (byte count).
-    // "я".len() == 2 bytes, but display width == 1 cell.
     if enabled {
+        let inner_width = area.width.saturating_sub(2);
         let width = UnicodeWidthStr::width(app.input.as_str()) as u16;
-        let x = area.x + width + 1;
+        let cursor_dx = width.min(inner_width.saturating_sub(1));
+        let x = area.x + 1 + cursor_dx;
         let y = area.y + 1;
         frame.set_cursor_position((x, y));
     }
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let is_loading = app.state == TuiState::Loading;
+    let is_loading = app.is_loading();
+    let spinner = if is_loading { get_spinner_frame() } else { ' ' };
 
-    let spinner = if is_loading {
-        get_spinner_frame()
-    } else {
-        ' '
-    };
-
-    let (state_text, state_color) = state_label(&app.state);
+    let (state_text, state_color) = state_label(app.status_state());
     let sid = app.session_id.as_deref().unwrap_or("—");
 
     let status_line = if is_loading {
@@ -340,15 +317,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" │ "),
-            Span::styled(
-                format!("session: {}", sid),
-                Style::default().fg(Color::Gray),
-            ),
+            Span::styled(format!("session: {}", sid), Style::default().fg(Color::Gray)),
             Span::raw(" │ "),
-            Span::styled(
-                "Generating response...",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Generating response...", Style::default().fg(Color::Yellow)),
         ])
     } else {
         Line::from(vec![
@@ -359,10 +330,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" │ "),
-            Span::styled(
-                format!("session: {}", sid),
-                Style::default().fg(Color::Gray),
-            ),
+            Span::styled(format!("session: {}", sid), Style::default().fg(Color::Gray)),
             Span::raw(" │ "),
             Span::styled(
                 "F3 Copy │ F4 Reset │ q Exit",
@@ -376,3 +344,4 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .style(BASE_STYLE);
     frame.render_widget(status, area);
 }
+

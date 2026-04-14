@@ -76,6 +76,11 @@ services:
     networks:
       - backend
     privileged: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:6778/health || exit 1"]

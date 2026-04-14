@@ -1,21 +1,14 @@
-use anyhow::{Result, bail};
-use crate::config::Config;
-use crate::api::{self, GenerateResponse};
+use anyhow::{bail, Result};
 
-/// Состояние TUI-приложения (отражает backend state machine)
-#[derive(Debug, Clone, PartialEq)]
+use crate::api::{self, GenerateResponse};
+use crate::config::Config;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiState {
-    /// Ожидание ввода задачи
     EnterTask,
-    /// План сгенерирован, ждём подтверждение/фидбек
     AwaitingPlan,
-    /// Код сгенерирован, ждём подтверждение/фидбек
     AwaitingCode,
-    /// Сессия завершена, код одобрен
     Done,
-    /// Ожидание ответа от сервера (загрузка)
-    Loading,
-    /// Ошибка
     Error(String),
 }
 
@@ -29,23 +22,51 @@ pub enum ChatMessage {
     Error(String),
 }
 
-/// События, обрабатываемые в главном цикле UI
 #[derive(Debug, Clone)]
-pub enum Event {
-    /// Пользователь ввёл текст (нажал Enter)
-    UserInput(String),
-    /// Ответ от API
-    ApiResponse(Result<GenerateResponse, String>),
+pub enum KeyAction {
+    Submit,
+    InsertChar(char),
+    Backspace,
+    CopyLastCode,
+    CancelOrReset,
+    ScrollUp,
+    ScrollDown,
+    Quit,
 }
 
-/// Результат асинхронного API-запроса, отправляемый из фоновой задачи в UI-поток.
 #[derive(Debug, Clone)]
-pub enum ApiEvent {
-    Response(GenerateResponse),
-    Error(String),
+pub enum AppEvent {
+    Key(KeyAction),
+    Api(ApiResult),
+    Tick,
 }
 
-/// Валидация допустимых переходов состояний
+#[derive(Debug, Clone)]
+pub enum Effect {
+    None,
+    StartRequest(ApiRequest),
+    CancelRequest,
+    Quit,
+}
+
+#[derive(Debug, Clone)]
+pub enum ApiResult {
+    Response {
+        request_id: u64,
+        response: GenerateResponse,
+    },
+    Error {
+        request_id: u64,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestMeta {
+    pub request_id: u64,
+    pub origin_state: TuiState,
+}
+
 fn validate_state_transition(from: &TuiState, to: &str) -> bool {
     match (from, to) {
         (TuiState::EnterTask, "awaiting_plan_confirmation") => true,
@@ -62,10 +83,12 @@ pub struct App {
     pub input: String,
     pub state: TuiState,
     pub config: Config,
-    pub scroll_offset: usize,
+    pub scroll_offset: u16,
     pub session_id: Option<String>,
     pub current_plan: Option<String>,
     pub current_code: Option<String>,
+    pub active_request: Option<RequestMeta>,
+    next_request_id: u64,
 }
 
 impl App {
@@ -79,105 +102,212 @@ impl App {
             session_id: None,
             current_plan: None,
             current_code: None,
+            active_request: None,
+            next_request_id: 1,
         }
     }
 
-    // ─── Sync: мгновенное обновление UI при нажатии Enter ────────────────────
+    pub fn is_loading(&self) -> bool {
+        self.active_request.is_some()
+    }
 
-    /// Синхронная часть: добавляет сообщение пользователя, очищает input,
-    /// переключает в Loading. Вызывается НЕМЕДЛЕННО при нажатии Enter.
-    /// Принимает текст напрямую (не из input поля).
-    pub fn submit_message_sync(&mut self, text: &str) -> Option<ApiRequest> {
-        let text = text.trim().to_string();
-        if text.is_empty() || self.state == TuiState::Loading {
-            return None;
-        }
+    pub fn input_enabled(&self) -> bool {
+        !self.is_loading()
+            && matches!(
+                self.state,
+                TuiState::EnterTask | TuiState::AwaitingPlan | TuiState::AwaitingCode
+            )
+    }
 
-        log::info!("User input: state={:?}, text={}", self.state, text);
-
-        // Мгновенная реакция UI
-        self.input.clear();
-        self.scroll_offset = 0;
-        self.messages.push(ChatMessage::User(text.clone()));
-
-        // Нормализуем "Подтвердить" — регистронезависимо
-        let normalized = if text.to_lowercase().contains("подтверд") {
-            "Подтвердить".to_string()
+    pub fn status_state(&self) -> DisplayState<'_> {
+        if self.is_loading() {
+            DisplayState::Loading
         } else {
-            text
-        };
+            DisplayState::Ready(&self.state)
+        }
+    }
 
-        // Валидация session_id для существующих сессий
-        if self.state != TuiState::EnterTask && self.session_id.is_none() {
-            log::error!("No session_id for state {:?}", self.state);
-            self.messages.push(ChatMessage::Error("Ошибка: нет session_id. Сессия сброшена.".to_string()));
-            self.state = TuiState::Error("No session_id".to_string());
-            return None;
+    pub fn handle_event(&mut self, event: AppEvent) -> Effect {
+        match event {
+            AppEvent::Key(action) => self.handle_key_action(action),
+            AppEvent::Api(result) => {
+                self.handle_api_result(result);
+                Effect::None
+            }
+            AppEvent::Tick => Effect::None,
+        }
+    }
+
+    fn handle_key_action(&mut self, action: KeyAction) -> Effect {
+        match action {
+            KeyAction::InsertChar(c) => {
+                if self.input_enabled() {
+                    self.input.push(c);
+                }
+                Effect::None
+            }
+            KeyAction::Backspace => {
+                if self.input_enabled() {
+                    self.input.pop();
+                }
+                Effect::None
+            }
+            KeyAction::Submit => self.submit_current_input(),
+            KeyAction::CopyLastCode => {
+                if let Err(e) = self.copy_last_code() {
+                    self.messages.push(ChatMessage::Error(e.to_string()));
+                }
+                Effect::None
+            }
+            KeyAction::CancelOrReset => {
+                if self.is_loading() {
+                    self.cancel_active_request()
+                } else {
+                    self.reset_session();
+                    Effect::None
+                }
+            }
+            KeyAction::ScrollUp => {
+                self.scroll_up();
+                Effect::None
+            }
+            KeyAction::ScrollDown => {
+                self.scroll_down();
+                Effect::None
+            }
+            KeyAction::Quit => Effect::Quit,
+        }
+    }
+
+    fn submit_current_input(&mut self) -> Effect {
+        if !self.input_enabled() {
+            return Effect::None;
         }
 
-        // Захватываем данные для фонового запроса ПЕРЕД сменой состояния
-        let prev_state = self.state.clone();
+        let text = self.input.trim().to_string();
+        if text.is_empty() {
+            return Effect::None;
+        }
+
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+
+        let origin_state = self.state.clone();
         let session_id = self.session_id.clone();
         let config = self.config.clone();
 
-        log::info!("Submitting API request: {:?} -> session_id={:?}", prev_state, session_id);
+        if origin_state != TuiState::EnterTask && session_id.is_none() {
+            let err = "Ошибка: нет session_id. Сессия сброшена.".to_string();
+            self.messages.push(ChatMessage::Error(err.clone()));
+            self.state = TuiState::Error("No session_id".to_string());
+            self.input.clear();
+            return Effect::None;
+        }
 
-        // Переключаем в Loading
-        self.state = TuiState::Loading;
+        self.messages.push(ChatMessage::User(text.clone()));
+        self.input.clear();
+        self.scroll_offset = 0;
+        self.active_request = Some(RequestMeta {
+            request_id,
+            origin_state: origin_state.clone(),
+        });
 
-        // Возвращаем запрос, который фоновая задача выполнит
-        Some(ApiRequest {
-            prev_state,
+        log::info!(
+            "Submitting API request: request_id={}, state={:?}, session_id={:?}",
+            request_id,
+            origin_state,
+            session_id
+        );
+
+        Effect::StartRequest(ApiRequest {
+            request_id,
+            origin_state,
             session_id,
             config,
-            text: normalized,
+            text,
         })
     }
 
-    // ─── Обработка ответа API (вызывается из главного цикла) ──────────────────
+    fn cancel_active_request(&mut self) -> Effect {
+        let Some(meta) = self.active_request.take() else {
+            return Effect::None;
+        };
 
-    /// Обрабатывает ответ от API. Вызывается ТОЛЬКО из главного цикла UI.
-    pub fn handle_response(&mut self, resp: GenerateResponse) {
-        self._apply_response(resp);
+        self.state = meta.origin_state;
+        self.messages
+            .push(ChatMessage::System("⚠️ Запрос отменён".to_string()));
+        Effect::CancelRequest
     }
 
-    /// Вызывается когда фоновая задача прислала ошибку.
-    #[allow(dead_code)]
-    pub fn handle_error(&mut self, err: String) {
+    fn handle_api_result(&mut self, result: ApiResult) {
+        match result {
+            ApiResult::Response {
+                request_id,
+                response,
+            } => self.handle_response(request_id, response),
+            ApiResult::Error { request_id, error } => self.handle_error(request_id, error),
+        }
+    }
+
+    fn handle_response(&mut self, request_id: u64, resp: GenerateResponse) {
+        let Some(meta) = self.take_matching_request(request_id) else {
+            log::warn!("Ignoring stale response for request_id={}", request_id);
+            return;
+        };
+
+        log::info!(
+            "API Response: request_id={}, state={}, session_id={}",
+            request_id,
+            resp.state,
+            resp.session_id
+        );
+
+        if !validate_state_transition(&meta.origin_state, &resp.state) {
+            let err = format!(
+                "Ошибка: неверный переход состояния {:?} -> {}.",
+                meta.origin_state, resp.state
+            );
+            log::error!("{}", err);
+            self.messages.push(ChatMessage::Error(err.clone()));
+            self.state = TuiState::Error(err);
+            return;
+        }
+
+        self.session_id = Some(resp.session_id.clone());
+        self.apply_response(resp);
+    }
+
+    fn handle_error(&mut self, request_id: u64, err: String) {
+        let Some(_) = self.take_matching_request(request_id) else {
+            log::warn!("Ignoring stale error for request_id={}", request_id);
+            return;
+        };
+
         log::error!("API Error: {}", err);
         self.messages.push(ChatMessage::Error(err.clone()));
         self.state = TuiState::Error(err);
     }
 
-    fn _apply_response(&mut self, resp: GenerateResponse) {
-        let prev_state = self.state.clone();
-        
-        // Логируем ответ
-        log::info!("API Response: state={}, session_id={}", resp.state, resp.session_id);
-        
-        // Валидируем переход состояния
-        if !validate_state_transition(&prev_state, &resp.state) {
-            log::error!("Invalid state transition: {:?} -> {}. Игнорируем ответ.", prev_state, resp.state);
-            self.messages.push(ChatMessage::Error(format!(
-                "Ошибка: неверный переход состояния {:?} -> {}. Обратите внимание: состояние сброшено.",
-                prev_state, resp.state
-            )));
-            self.state = TuiState::Error(format!("Invalid transition: {:?} -> {}", prev_state, resp.state));
-            return;
+    fn take_matching_request(&mut self, request_id: u64) -> Option<RequestMeta> {
+        if self
+            .active_request
+            .as_ref()
+            .is_some_and(|meta| meta.request_id == request_id)
+        {
+            return self.active_request.take();
         }
+        None
+    }
 
-        self.session_id = Some(resp.session_id.clone());
-
+    fn apply_response(&mut self, resp: GenerateResponse) {
         match resp.state.as_str() {
             "awaiting_plan_confirmation" => {
                 if let Some(plan) = resp.plan {
                     self.current_plan = Some(plan.clone());
                     self.messages.push(ChatMessage::Plan(plan));
                 }
-                self.messages.push(ChatMessage::System(format!(
-                    "💬 {}",
-                    resp.message
-                )));
+                self.messages
+                    .push(ChatMessage::System(format!("💬 {}", resp.message)));
                 self.state = TuiState::AwaitingPlan;
             }
             "awaiting_code_approval" => {
@@ -185,15 +315,11 @@ impl App {
                     self.current_code = Some(code.clone());
                     self.messages.push(ChatMessage::Code(code));
                 }
-                if let Some(fb) = resp.sandbox_feedback {
-                    if !fb.is_empty() {
-                        self.messages.push(ChatMessage::Feedback(fb));
-                    }
+                if let Some(fb) = resp.sandbox_feedback.filter(|fb| !fb.is_empty()) {
+                    self.messages.push(ChatMessage::Feedback(fb));
                 }
-                self.messages.push(ChatMessage::System(format!(
-                    "💬 {}",
-                    resp.message
-                )));
+                self.messages
+                    .push(ChatMessage::System(format!("💬 {}", resp.message)));
                 self.state = TuiState::AwaitingCode;
             }
             "done" => {
@@ -201,57 +327,30 @@ impl App {
                     self.current_code = Some(code.clone());
                     self.messages.push(ChatMessage::Code(code));
                 }
-                self.messages.push(ChatMessage::System(format!(
-                    "✅ {}",
-                    resp.message
-                )));
+                self.messages
+                    .push(ChatMessage::System(format!("✅ {}", resp.message)));
                 self.state = TuiState::Done;
             }
-            _ => {
-                self._handle_unexpected_state(&resp);
+            other => {
+                let err = format!("Неожиданное состояние ответа: {}", other);
+                log::error!("{}", err);
+                self.messages.push(ChatMessage::Error(err.clone()));
+                self.state = TuiState::Error(err);
             }
         }
+
+        self.scroll_offset = 0;
     }
 
-    fn _handle_unexpected_state(&mut self, resp: &GenerateResponse) {
-        if let Some(plan) = &resp.plan {
-            self.current_plan = Some(plan.clone());
-            self.messages.push(ChatMessage::Plan(plan.clone()));
-        }
-        if let Some(code) = &resp.code {
-            self.current_code = Some(code.clone());
-            self.messages.push(ChatMessage::Code(code.clone()));
-        }
-        self.messages.push(ChatMessage::System(format!(
-            "📋 state={}, {}",
-            resp.state, resp.message
-        )));
-        if !resp
-            .sandbox_feedback
-            .as_deref()
-            .unwrap_or("")
-            .is_empty()
-        {
-            self.messages.push(ChatMessage::Feedback(
-                resp.sandbox_feedback.clone().unwrap_or_default(),
-            ));
-        }
-        if resp.state == "done" {
-            self.state = TuiState::Done;
-        } else if resp.code.is_some() {
-            self.state = TuiState::AwaitingCode;
-        } else {
-            self.state = TuiState::AwaitingPlan;
-        }
-    }
-
-    pub fn clear_history(&mut self) {
+    fn reset_session(&mut self) {
         self.messages.clear();
+        self.input.clear();
         self.session_id = None;
         self.current_plan = None;
         self.current_code = None;
         self.state = TuiState::EnterTask;
         self.scroll_offset = 0;
+        self.active_request = None;
     }
 
     pub fn copy_last_code(&self) -> Result<()> {
@@ -264,43 +363,59 @@ impl App {
     }
 
     pub fn scroll_up(&mut self) {
-        if self.scroll_offset < self.messages.len().saturating_sub(1) {
-            self.scroll_offset += 1;
-        }
+        self.scroll_offset = self.scroll_offset.saturating_add(3);
     }
 
     pub fn scroll_down(&mut self) {
-        if self.scroll_offset > 0 {
-            self.scroll_offset -= 1;
-        }
+        self.scroll_offset = self.scroll_offset.saturating_sub(3);
     }
 }
 
-// ─── Данные для фоновой задачи (владеющие типы, Send) ────────────────────────
+pub enum DisplayState<'a> {
+    Loading,
+    Ready(&'a TuiState),
+}
 
+#[derive(Debug, Clone)]
 pub struct ApiRequest {
-    pub prev_state: TuiState,
+    pub request_id: u64,
+    pub origin_state: TuiState,
     pub session_id: Option<String>,
     pub config: Config,
     pub text: String,
 }
 
-/// Выполняет API-запрос в фоне. Вызывается из `tokio::spawn`.
-pub async fn execute_api_request(req: ApiRequest) -> ApiEvent {
-    let result: Result<GenerateResponse> = match &req.prev_state {
+pub async fn execute_api_request(req: ApiRequest) -> ApiResult {
+    let result: Result<GenerateResponse> = match &req.origin_state {
         TuiState::EnterTask => api::start_session(&req.config, &req.text).await,
         TuiState::AwaitingPlan | TuiState::AwaitingCode => {
             let sid = match req.session_id.as_deref() {
                 Some(s) => s,
-                None => return ApiEvent::Error("Нет session_id".into()),
+                None => {
+                    return ApiResult::Error {
+                        request_id: req.request_id,
+                        error: "Нет session_id".into(),
+                    };
+                }
             };
             api::send_response(&req.config, sid, &req.text).await
         }
-        _ => return ApiEvent::Error(format!("Неожиданное состояние: {:?}", req.prev_state)),
+        TuiState::Done | TuiState::Error(_) => {
+            return ApiResult::Error {
+                request_id: req.request_id,
+                error: format!("Неожиданное состояние: {:?}", req.origin_state),
+            };
+        }
     };
 
     match result {
-        Ok(resp) => ApiEvent::Response(resp),
-        Err(e) => ApiEvent::Error(e.to_string()),
+        Ok(response) => ApiResult::Response {
+            request_id: req.request_id,
+            response,
+        },
+        Err(error) => ApiResult::Error {
+            request_id: req.request_id,
+            error: error.to_string(),
+        },
     }
 }
