@@ -1,4 +1,4 @@
-pydentic
+pydantic
 fastapi[standard]
 ollama
 qdrant-client

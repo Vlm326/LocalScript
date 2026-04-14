@@ -71,6 +71,7 @@ _utils.array.markAsArray(arr) - для объявления существующ
 
 # Роль 3: Критик (Валидатор)
 # Должен проверить lowcode, а также проверить тесты (инфу) из рага. Если че то не так, отправляем фидбэк
+# 
 SYSTEM_CRITIC = f"""
 Роль: Ты — эксперт по качеству (QA Automation) и логический аналитик систем на Lua 5.5. 
 Твоя задача — проверить, выполняются ли правила LowCode. Правила LowCode:
@@ -88,7 +89,7 @@ a
 
 
 Если код правильный, в качестве вывода выведи только {CONFIRM_WORD}
-Если есть ошибки, в качестве ответа выведи то, что нужно исправить. 
+Если есть ошибки, в качестве ответа выведи то, что нужно исправить. Также укажи, что именно реализовано неправильно. 
 """.strip()
 
 
@@ -149,7 +150,10 @@ def build_critic_messages(
         rag_data: str = "",
                           ) -> list:
     """Сформировать messages для валидации кода."""
-    return [
+    messages = [
         {"role": "system", "content": SYSTEM_CRITIC},
-        {"role": "user", "content": f"Review this Lua code:\n\n{code}"},
     ]
+    if rag_data:
+        messages.append({"role": "system", "content": f"Reference data:\n{rag_data}"})
+    messages.append({"role": "user", "content": f"Review this Lua code:\n\n{code}"})
+    return messages

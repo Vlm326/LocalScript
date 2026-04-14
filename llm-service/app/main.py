@@ -207,7 +207,6 @@ async def _handle_code_generation(
             session.context,
         )
     )
-
     if successfull_validation is not True:
         session.state = SessionState.AWAITING_CODE_APPROVAL
         return GenerateResponse(
@@ -221,38 +220,17 @@ async def _handle_code_generation(
     # --- Pass 2: Ollama critic (logic, security, performance) ---
     critic_result = ""
     if llm_validation:
-        for attempt in range(1, CODE_RETRIES_MODEL + 1):
-            critic_result = await pipeline._critique_code(session.current_code)
-            if critic_result.strip().upper() != CONFIRM_WORD:
-                fixed_code = await pipeline._generate_code(
-                    session.plan,
-                    session.user_task,
-                    previous_code=session.current_code,
-                    critic_feedback=critic_result,
-                )
-                raw_fixed = _strip_code_block(fixed_code)
-                successfull_validation, session.current_code, sandbox_feedback = (
-                    await validate_code(
-                        raw_fixed,
-                        pipeline,
-                        CODE_RETRIES_SANDBOX,
-                        session.plan,
-                        session.user_task,
-                        session.context,
-                    )
-                )
-                if successfull_validation is not True:
-                    session.state = SessionState.AWAITING_CODE_APPROVAL
-                    return GenerateResponse(
-                        session_id="",
-                        state=session.state,
-                        code=session.current_code,
-                        sandbox_feedback=sandbox_feedback,
-                        message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}. Замечания критика: {critic_result}",
-                    )
-            else:
-                break
+        critic_result = await pipeline._critique_code(session.current_code, rag_data="")
+        if critic_result.strip().upper() != CONFIRM_WORD:
 
+            session.state = SessionState.AWAITING_CODE_APPROVAL
+            return GenerateResponse(
+                session_id="",
+                state=session.state,
+                code=session.current_code,
+                sandbox_feedback=sandbox_feedback,
+                message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}. Замечания критика: {critic_result}. \n Укажите, действительно ли нужны исправления.",
+            )
 
     session.state = SessionState.AWAITING_CODE_APPROVAL
     return GenerateResponse(
@@ -290,7 +268,6 @@ async def _handle_code_revision(
             session.context,
         )
     )
-
     if successfull_validation is not True:
         session.state = SessionState.AWAITING_CODE_APPROVAL
         return GenerateResponse(
@@ -301,39 +278,20 @@ async def _handle_code_revision(
             message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}",
         )
 
+
+
     critic_result = ""
     if llm_validation:
-        for attempt in range(1, CODE_RETRIES_MODEL + 1):
-            critic_result = await pipeline._critique_code(session.current_code)
-            if critic_result.strip().upper() != CONFIRM_WORD:
-                fixed_code = await pipeline._generate_code(
-                    session.plan,
-                    session.user_task,
-                    previous_code=session.current_code,
-                    critic_feedback=f"{critic_result}. {user_feedback}",
+        critic_result = await pipeline._critique_code(session.current_code, rag_data="")
+        if critic_result.strip().upper() != CONFIRM_WORD:
+                session.state = SessionState.AWAITING_CODE_APPROVAL
+                return GenerateResponse(
+                    session_id="",
+                    state=session.state,
+                    code=session.current_code,
+                    sandbox_feedback=sandbox_feedback,
+                    message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}. Замечания критика: {critic_result}. \n Укажите, действительно ли нужны исправления.",
                 )
-                raw_fixed = _strip_code_block(fixed_code)
-                successfull_validation, session.current_code, sandbox_feedback = (
-                    await validate_code(
-                        raw_fixed,
-                        pipeline,
-                        CODE_RETRIES_SANDBOX,
-                        session.plan,
-                        session.user_task,
-                        session.context,
-                    )
-                )
-                if successfull_validation is not True:
-                    session.state = SessionState.AWAITING_CODE_APPROVAL
-                    return GenerateResponse(
-                        session_id="",
-                        state=session.state,
-                        code=session.current_code,
-                        sandbox_feedback=sandbox_feedback,
-                        message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Возможная ошибка: {critic_result}",
-                    )
-            else:
-                break
 
     msg = f"Код обновлён (версия {session.code_revision_count})."
     msg += " Подтвердите или укажите исправления."

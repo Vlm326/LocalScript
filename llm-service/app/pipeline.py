@@ -1,7 +1,7 @@
 import time
 
 import prompts
-from config import CONFIRM_WORD
+from config import CONFIRM_WORD, CODE_RETRIES_MODEL
 from ollama_client import OllamaClient
 
 
@@ -25,7 +25,7 @@ class GenerationPipeline:
         max_retries: int = 2,
     ):
         self.client = OllamaClient(model_name, url=url)
-        self.max_retries = max_retries
+        self.max_retries = CODE_RETRIES_MODEL
 
     async def _generate_plan(self, task: str) -> str:
         start_plan_time = time.perf_counter()
@@ -59,9 +59,9 @@ class GenerationPipeline:
         print("=" * 15, "\n", "CODE_TIME: ", end_code_time - start_code_time)
         return result or ""
 
-    async def _critique_code(self, code: str) -> str:
+    async def _critique_code(self, code: str, rag_data: str = "") -> str:
         start_feedback_time = time.perf_counter()
-        messages = prompts.build_critic_messages(code)
+        messages = prompts.build_critic_messages(code, rag_data=rag_data)
         result = await self.client.send_request(messages, keep_alive=300)
         end_feedback_time = time.perf_counter()
         print(
