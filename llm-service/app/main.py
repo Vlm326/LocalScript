@@ -2,6 +2,7 @@ import time
 import uuid
 from enum import Enum
 from typing import Optional
+from rag_func import build_rag_context
 
 from config import (
     CODE_RETRIES_MODEL,
@@ -44,6 +45,7 @@ class SessionData:
         "code_revision_count",
         "sandbox_feedback",
         "created_at",
+        "rag_context"
     )
 
     def __init__(self, task: str):
@@ -56,6 +58,7 @@ class SessionData:
         self.code_revision_count = 0
         self.sandbox_feedback = ""
         self.created_at = time.time()
+        self.rag_context = ""
 
 
 # In-memory session store (local-only, no external deps)
@@ -220,7 +223,7 @@ async def _handle_code_generation(
     # --- Pass 2: Ollama critic (logic, security, performance) ---
     critic_result = ""
     if llm_validation:
-        critic_result = await pipeline._critique_code(session.current_code, rag_data="")
+        critic_result = await pipeline._critique_code(session.current_code, rag_data=session.rag_context)
         if critic_result.strip().upper() != CONFIRM_WORD:
 
             session.state = SessionState.AWAITING_CODE_APPROVAL
@@ -229,7 +232,7 @@ async def _handle_code_generation(
                 state=session.state,
                 code=session.current_code,
                 sandbox_feedback=sandbox_feedback,
-                message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}. Замечания критика: {critic_result}. \n Укажите, действительно ли нужны исправления.",
+                message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Замечания критика: {critic_result}. \n Укажите, действительно ли нужны исправления.",
             )
 
     session.state = SessionState.AWAITING_CODE_APPROVAL
@@ -282,7 +285,7 @@ async def _handle_code_revision(
 
     critic_result = ""
     if llm_validation:
-        critic_result = await pipeline._critique_code(session.current_code, rag_data="")
+        critic_result = await pipeline._critique_code(session.current_code, rag_data=session.rag_context)
         if critic_result.strip().upper() != CONFIRM_WORD:
                 session.state = SessionState.AWAITING_CODE_APPROVAL
                 return GenerateResponse(
@@ -290,7 +293,7 @@ async def _handle_code_revision(
                     state=session.state,
                     code=session.current_code,
                     sandbox_feedback=sandbox_feedback,
-                    message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}. Замечания критика: {critic_result}. \n Укажите, действительно ли нужны исправления.",
+                    message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Замечания критика: {critic_result}. \n Укажите, действительно ли нужны исправления.",
                 )
 
     msg = f"Код обновлён (версия {session.code_revision_count})."
@@ -328,6 +331,7 @@ async def generate(req: GenerateRequest):
     # ── User is confirming / revising the plan ────────────────────────
     elif session.state == SessionState.AWAITING_PLAN_CONFIRMATION:
         if req.user_response.strip().lower() == "подтвердить":
+            session.rag_context = await build_rag_context(session.plan)
             result = await _handle_code_generation(session, req.llm_validation)
         else:
             result = await _handle_plan_revision(session, req.user_response)
