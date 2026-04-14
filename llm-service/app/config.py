@@ -2,6 +2,7 @@
 import os
 
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "qwen2.5-coder:7b")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "bge-m3")
 
 # pipeline
 CONFIRM_WORD = os.getenv("CONFIRM_WORD", "CODE_OK")
@@ -14,4 +15,5 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
+QDRANT_URL = os.getenv("QDRANT_URL", "https://qdrant:6333")
 SANDBOX_SERVICE_URL = os.getenv("SANDBOX_SERVICE_URL", "http://sandbox-service:6778")
