@@ -368,14 +368,14 @@ async def generate(req: GenerateRequest):
 
     # ── User is confirming / revising the plan ────────────────────────
     elif session.state == SessionState.AWAITING_PLAN_CONFIRMATION:
-        if req.user_response.strip() == "Подтвердить":
+        if req.user_response.strip().lower() == "подтвердить":
             result = await _handle_code_generation(session, req.llm_validation)
         else:
             result = await _handle_plan_revision(session, req.user_response)
 
     # ── Code was just generated (auto sandbox pass), waiting approval ─
     elif session.state == SessionState.AWAITING_CODE_APPROVAL:
-        if req.user_response.strip() == "Подтвердить":
+        if req.user_response.strip().lower() == "подтвердить":
             session.state = SessionState.DONE
             result = GenerateResponse(
                 session_id=sid,
