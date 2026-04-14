@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(xargs *)",
-      "Read(//home/vlm326/Documents/Projects/hackaton/task-repo/llm-service/app/**)"
-    ]
-  },
-  "$version": 3
-}

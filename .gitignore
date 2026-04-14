@@ -28,3 +28,7 @@ Thumbs.db
 *.o
 *.so
 *.exe
+
+*.txt
+.qwen
+.vscode
