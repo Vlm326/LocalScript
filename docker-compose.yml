@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   ollama:
     image: ollama/ollama:latest
@@ -11,24 +9,49 @@ services:
     environment:
       - OLLAMA_KEEP_ALIVE=24h
     command: ["serve"]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 5m
     restart: unless-stopped
 
   ollama-init:
     image: ollama/ollama:latest
     container_name: ollama-init
     depends_on:
-      - ollama
-    entrypoint: ["/bin/sh", "-c"]
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODEL_NAME: qwen2.5-coder:7b
     volumes:
       - ollama_data:/root/.ollama
+    entrypoint: ["/bin/sh", "-euxc"]
     command: |
-      echo "Sleeping before pull..."
-      sleep 10
+      model="$${MODEL_NAME:?MODEL_NAME not set}"
 
-      echo "Pulling model qwen2.5-coder:7b..."
-      ollama pull qwen2.5-coder:7b || true
+      echo "waiting for Ollama to become reachable..."
+      for i in $$(seq 1 30); do
+        if ollama list >/dev/null 2>&1; then
+          break
+        fi
+        echo "ollama not ready yet ($$i/30)"
+        sleep 2
+      done
 
-      echo "Model ready"
+      echo "checking whether model already exists..."
+      if ollama list | awk 'NR>1 {print $$1}' | grep -Fxq "$$model"; then
+        echo "model already present: $$model"
+      else
+        echo "pulling model: $$model"
+        ollama pull "$$model"
+      fi
+
+      echo "verifying model installation..."
+      ollama list | awk 'NR>1 {print $$1}' | grep -Fxq "$$model"
+      echo "done"
     restart: "no"
 
   sandbox-service:
@@ -37,7 +60,7 @@ services:
     container_name: sandbox-service
     ports:
       - "6778:6778"
-    privileged: true 
+    privileged: true
     restart: unless-stopped
 
   llm-service:
@@ -47,25 +70,16 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - OLLAMA_URL=ollama:11434
+      - OLLAMA_URL=http://ollama:11434
       - SANDBOX_SERVICE_URL=http://sandbox-service:6778
     depends_on:
-      - ollama
-      - sandbox-service
-      - ollama-init
+      ollama:
+        condition: service_healthy
+      sandbox-service:
+        condition: service_started
+      ollama-init:
+        condition: service_completed_successfully
     restart: unless-stopped
-
-  llm-tui:
-    build:
-      context: ./llm-tui
-    container_name: llm-tui
-    environment:
-      - LLM_SERVICE_URL=http://llm-service:8080
-    depends_on:
-      - llm-service
-    stdin_open: true
-    tty: true
-    restart: "no"
 
 volumes:
   ollama_data:

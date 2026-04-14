@@ -29,12 +29,12 @@ def extract_validation_feedback(response: Any):
     if isinstance(response, str):
         response = json.loads(response)
 
-    if response.get("status") == "ok":
-        return True
-
+    # if response.get("status") == "ok":
+    #     return True
+    status = response.get("status")
     error = response.get("error_detail")
-    if not error:
-        return "Unknown error"
+    # if not error:
+    #     return "No errors"
 
     snippet = error.get("snippet")
     feedback = f'{error["kind"]}: "{error["message"]}"'

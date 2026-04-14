@@ -162,7 +162,7 @@ async def _handle_code_generation(session: SessionData) -> GenerateResponse:
     except Exception as exc:
         sandbox_feedback = str(exc)
 
-    if sandbox_feedback is not True:
+    if sandbox_feedback != True:
         # Sandbox error — auto-fix loop
         for attempt in range(1, CODE_RETRIES_COUNT + 1):
             try:
