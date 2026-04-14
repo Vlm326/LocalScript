@@ -5,10 +5,10 @@ from typing import Optional
 
 from config import (
     CODE_RETRIES_MODEL,
+    CODE_RETRIES_SANDBOX,
+    CONFIRM_WORD,
     GENERATION_MODEL,
     OLLAMA_URL,
-    CONFIRM_WORD,
-    CODE_RETRIES_SANDBOX,
 )
 from fastapi import FastAPI, HTTPException
 from json_input_parser import ParseError, extract_context_and_clean_task
@@ -126,8 +126,7 @@ async def validate_code(
     user_task,
     context,
 ):
-
-    # Sandbox error — auto-fix loop
+    """Validate code in sandbox with retry loop."""
     sandbox_resp = await send_code_for_validation(current_code, context)
     sandbox_feedback = extract_validation_feedback(sandbox_resp)
     for attempt in range(1, count_of_retries + 1):
@@ -143,15 +142,13 @@ async def validate_code(
             sandbox_resp = await send_code_for_validation(raw_fixed, context)
             sandbox_feedback = extract_validation_feedback(sandbox_resp)
         else:
-            # возможно здесь стоит давать пользователю информацию насчет вероятной ошибки, котоую не смог исправить кодер
             return True, current_code, None
-
     else:
         return (
             False,
             current_code,
             str(sandbox_feedback),
-        )  # здесь можно выводить плачущего котика
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +172,6 @@ async def _handle_plan_revision(
 ) -> GenerateResponse:
     """Step 2 — revise plan based on user feedback (loopable)."""
     session.plan_revision_count += 1
-    # Feed previous plan + user corrections back into architect
     refined_plan = await pipeline._generate_plan(
         f"Предыдущий план:\n{session.plan}\n\nИсправления от пользователя:\n{user_feedback}\n\nОбнови план с учётом исправлений.",
     )
@@ -201,7 +197,6 @@ async def _handle_code_generation(
     session.sandbox_feedback = ""
 
     # --- Pass 1: Rust sandbox (interpretation errors) ---
-
     successfull_validation, session.current_code, sandbox_feedback = (
         await validate_code(
             session.current_code,
@@ -220,11 +215,8 @@ async def _handle_code_generation(
             state=session.state,
             code=session.current_code,
             sandbox_feedback=sandbox_feedback,
-            message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Ошибка проверки кода: {sandbox_feedback}",
+            message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}",
         )
- 
-
-
 
     # --- Pass 2: Ollama critic (logic, security, performance) ---
     critic_result = ""
@@ -236,7 +228,7 @@ async def _handle_code_generation(
                     session.plan,
                     session.user_task,
                     previous_code=session.current_code,
-                    critic_feedback=f"{critic_result}",
+                    critic_feedback=critic_result,
                 )
                 raw_fixed = _strip_code_block(fixed_code)
                 successfull_validation, session.current_code, sandbox_feedback = (
@@ -256,21 +248,10 @@ async def _handle_code_generation(
                         state=session.state,
                         code=session.current_code,
                         sandbox_feedback=sandbox_feedback,
-                        message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Ошибка проверки кода: {sandbox_feedback, critic_result}",
+                        message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}. Замечания критика: {critic_result}",
                     )
-
-                
             else:
                 break
-                # возможно, стоит не менять код а просто дать пользователю лог
-                # session.state = SessionState.AWAITING_CODE_APPROVAL
-                # return GenerateResponse(
-                #     session_id="",
-                #     state=session.state,
-                #     code=session.current_code,
-                #     sandbox_feedback=sandbox_feedback,
-                #     message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Возможная ошибка {critic_result}",
-                # )
 
     session.state = SessionState.AWAITING_CODE_APPROVAL
     return GenerateResponse(
@@ -316,11 +297,8 @@ async def _handle_code_revision(
             state=session.state,
             code=session.current_code,
             sandbox_feedback=sandbox_feedback,
-            message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Ошибка проверки кода:  {sandbox_feedback}",
+            message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Ошибка проверки кода: {sandbox_feedback}",
         )
- 
-
-
 
     critic_result = ""
     if llm_validation:
@@ -351,15 +329,10 @@ async def _handle_code_revision(
                         state=session.state,
                         code=session.current_code,
                         sandbox_feedback=sandbox_feedback,
-                        message=f"Сгенерированный код не прошел проверку внтуреннего валидатора. Возможная ошибка {critic_result}",
+                        message=f"Сгенерированный код не прошёл проверку внутреннего валидатора. Возможная ошибка: {critic_result}",
                     )
-
-
             else:
                 break
-   
-
-
 
     msg = f"Код обновлён (версия {session.code_revision_count})."
     msg += " Подтвердите или укажите исправления."
@@ -388,6 +361,7 @@ async def generate(req: GenerateRequest):
         except ParseError as e:
             session.user_task = req.task  # fallback to raw task
             session.context = {"wf": {"vars": {}, "initVariables": {}}}
+
     # ── First call: generate plan ──────────────────────────────────────
     if session.state == SessionState.GENERATING_PLAN:
         result = await _handle_plan_generation(session)
@@ -395,10 +369,8 @@ async def generate(req: GenerateRequest):
     # ── User is confirming / revising the plan ────────────────────────
     elif session.state == SessionState.AWAITING_PLAN_CONFIRMATION:
         if req.user_response.strip() == "Подтвердить":
-            # Plan approved — move to code generation
             result = await _handle_code_generation(session, req.llm_validation)
         else:
-            # Revise plan (loop — user can repeat indefinitely)
             result = await _handle_plan_revision(session, req.user_response)
 
     # ── Code was just generated (auto sandbox pass), waiting approval ─
@@ -412,8 +384,9 @@ async def generate(req: GenerateRequest):
                 message="Код одобрен. Генерация завершена.",
             )
         else:
-            # Revise code based on user feedback (loop — repeat indefinitely)
-            result = await _handle_code_revision(session, req.user_response, req.llm_validation)
+            result = await _handle_code_revision(
+                session, req.user_response, req.llm_validation
+            )
 
     # ── Done — any further call returns the approved code ─────────────
     elif session.state == SessionState.DONE:
@@ -430,7 +403,6 @@ async def generate(req: GenerateRequest):
             status_code=500, detail=f"Unexpected state: {session.state}"
         )
 
-    # Fill session_id into response
     result.session_id = sid
     return result
 

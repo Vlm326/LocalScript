@@ -12,7 +12,7 @@ class OllamaClient:
         temperature: float = 0.0,
     ):
         self.model = model_name
-        self.base_url = f"http://{url}"
+        self.base_url = url if url.startswith("http") else f"http://{url}"
         self.api_url = f"{self.base_url}/api/chat"
         self.num_ctx = num_ctx
         self.temperature = temperature
