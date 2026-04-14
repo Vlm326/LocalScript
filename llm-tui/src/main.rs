@@ -76,7 +76,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                                 }
                                 KeyCode::F(3) => {
                                     if let Err(e) = app.copy_last_code() {
-                                        app.messages.push(app::Message::Error(e.to_string()));
+                                        app.messages.push(app::ChatMessage::Error(e.to_string()));
                                     }
                                 }
                                 KeyCode::F(4) => {
