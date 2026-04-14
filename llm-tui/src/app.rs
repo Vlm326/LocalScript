@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 
+use std::path::PathBuf;
+
 use crate::api::{self, GenerateResponse};
 use crate::config::Config;
 
@@ -26,6 +28,7 @@ pub enum ChatMessage {
 pub enum KeyAction {
     Submit,
     InsertChar(char),
+    InsertText(String),
     Backspace,
     CopyLastCode,
     CancelOrReset,
@@ -146,6 +149,15 @@ impl App {
                 }
                 Effect::None
             }
+            KeyAction::InsertText(text) => {
+                if self.input_enabled() {
+                    let sanitized = sanitize_paste(&text);
+                    if !sanitized.is_empty() {
+                        self.input.push_str(&sanitized);
+                    }
+                }
+                Effect::None
+            }
             KeyAction::Backspace => {
                 if self.input_enabled() {
                     self.input.pop();
@@ -154,9 +166,7 @@ impl App {
             }
             KeyAction::Submit => self.submit_current_input(),
             KeyAction::CopyLastCode => {
-                if let Err(e) = self.copy_last_code() {
-                    self.messages.push(ChatMessage::Error(e.to_string()));
-                }
+                self.export_last_code();
                 Effect::None
             }
             KeyAction::CancelOrReset => {
@@ -362,6 +372,43 @@ impl App {
         bail!("Нет кода для копирования")
     }
 
+    fn export_last_code(&mut self) {
+        let Some(code) = self.current_code.clone() else {
+            self.messages
+                .push(ChatMessage::Error("Нет кода для экспорта".to_string()));
+            return;
+        };
+
+        // Clipboard often fails in Docker/headless environments; treat it as best-effort.
+        match self.copy_last_code() {
+            Ok(()) => {
+                self.messages
+                    .push(ChatMessage::System("✅ Код скопирован в буфер обмена".to_string()));
+            }
+            Err(e) => {
+                self.messages.push(ChatMessage::System(format!(
+                    "⚠️ Не удалось скопировать в буфер обмена: {}",
+                    e
+                )));
+            }
+        }
+
+        let path = PathBuf::from("/app/exports/llm_last_code.lua");
+        let content = ensure_trailing_newline(&code);
+
+        match std::fs::write(&path, content) {
+            Ok(()) => self.messages.push(ChatMessage::System(format!(
+                "💾 Код сохранён в файл: {}",
+                path.display()
+            ))),
+            Err(e) => self.messages.push(ChatMessage::Error(format!(
+                "Не удалось сохранить файл {}: {}",
+                path.display(),
+                e
+            ))),
+        }
+    }
+
     pub fn scroll_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_add(3);
     }
@@ -369,6 +416,39 @@ impl App {
     pub fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(3);
     }
+}
+
+fn ensure_trailing_newline(s: &str) -> String {
+    if s.ends_with('\n') {
+        s.to_string()
+    } else {
+        format!("{}\n", s)
+    }
+}
+
+fn sanitize_paste(text: &str) -> String {
+    // Input UI is effectively single-line; keep paste predictable.
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\r' | '\n' | '\t' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn find_repo_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    for _ in 0..10 {
+        if dir.join("docker-compose.yml").is_file() || dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
 }
 
 pub enum DisplayState<'a> {

@@ -194,7 +194,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let controls = "F3 Copy │ F4 Reset │ q Exit";
+    let controls = "F3 Export │ F4 Reset │ Esc/Ctrl+Q Exit";
 
     let lines = vec![
         Line::from(Span::styled(
@@ -333,7 +333,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("session: {}", sid), Style::default().fg(Color::Gray)),
             Span::raw(" │ "),
             Span::styled(
-                "F3 Copy │ F4 Reset │ q Exit",
+                "F3 Export │ F4 Reset │ Esc/Ctrl+Q Exit",
                 Style::default().fg(Color::DarkGray),
             ),
         ])
@@ -344,4 +344,3 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .style(BASE_STYLE);
     frame.render_widget(status, area);
 }
-

@@ -24,6 +24,9 @@ Thumbs.db
 .env
 *.local
 
+# Exports
+exports/
+
 # Build outputs
 *.o
 *.so

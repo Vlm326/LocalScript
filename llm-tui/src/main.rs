@@ -8,7 +8,7 @@ use std::io;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -18,6 +18,11 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::app::{App, AppEvent, Effect, KeyAction};
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 fn init_file_logger() {
     let log_file = OpenOptions::new()
@@ -39,6 +44,7 @@ async fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnableBracketedPaste)?;
     execute!(
         stdout,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
@@ -48,7 +54,11 @@ async fn main() -> Result<()> {
 
     std::panic::set_hook(Box::new(|panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
         eprintln!("PANIC: {}", panic_info);
     }));
 
@@ -56,7 +66,11 @@ async fn main() -> Result<()> {
 
     std::panic::set_hook(Box::new(|_| {}));
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     if let Err(err) = result {
@@ -71,7 +85,8 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
     let mut app = App::new();
 
     let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(64);
-    spawn_input_reader(event_tx.clone());
+    let input_shutdown = Arc::new(AtomicBool::new(false));
+    let input_handle = spawn_input_reader(event_tx.clone(), input_shutdown.clone());
 
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
     let mut active_request: Option<JoinHandle<()>> = None;
@@ -96,31 +111,60 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
         let _ = handle.await;
     }
 
+    input_shutdown.store(true, Ordering::Relaxed);
+    drop(event_tx);
+    let _ = input_handle.await;
+
     Ok(())
 }
 
-fn spawn_input_reader(event_tx: mpsc::Sender<AppEvent>) {
-    tokio::task::spawn_blocking(move || loop {
-        match event::read() {
-            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                if let Some(action) = map_key_to_action(key.code) {
-                    if event_tx.blocking_send(AppEvent::Key(action)).is_err() {
+fn spawn_input_reader(
+    event_tx: mpsc::Sender<AppEvent>,
+    shutdown: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    // Use poll with a timeout so we can exit cleanly on shutdown without leaving raw mode behind.
+    tokio::task::spawn_blocking(move || {
+        while !shutdown.load(Ordering::Relaxed) {
+            match event::poll(std::time::Duration::from_millis(100)) {
+                Ok(true) => match event::read() {
+                    Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                        if let Some(action) = map_key_to_action(&key) {
+                            if event_tx.blocking_send(AppEvent::Key(action)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Event::Paste(text)) => {
+                        if event_tx
+                            .blocking_send(AppEvent::Key(KeyAction::InsertText(text)))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        log::error!("Input reader read failed: {}", err);
                         break;
                     }
+                },
+                Ok(false) => {}
+                Err(err) => {
+                    log::error!("Input reader poll failed: {}", err);
+                    break;
                 }
             }
-            Ok(_) => {}
-            Err(err) => {
-                log::error!("Input reader failed: {}", err);
-                break;
-            }
         }
-    });
+    })
 }
 
-fn map_key_to_action(code: KeyCode) -> Option<KeyAction> {
-    match code {
-        KeyCode::Char('q') | KeyCode::Esc => Some(KeyAction::Quit),
+fn map_key_to_action(key: &crossterm::event::KeyEvent) -> Option<KeyAction> {
+    use crossterm::event::KeyModifiers;
+
+    match key.code {
+        KeyCode::Esc => Some(KeyAction::Quit),
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(KeyAction::Quit),
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(KeyAction::Quit),
         KeyCode::Enter => Some(KeyAction::Submit),
         KeyCode::Char(c) => Some(KeyAction::InsertChar(c)),
         KeyCode::Backspace => Some(KeyAction::Backspace),
