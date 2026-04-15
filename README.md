@@ -1,93 +1,312 @@
-# template
+# LocalScript
+[![docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![docker compose](https://img.shields.io/badge/Docker%20Compose-v2-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![fastapi](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![rust](https://img.shields.io/badge/Rust-1.88-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![axum](https://img.shields.io/badge/Axum-0.8-000000)](https://docs.rs/axum/)
+[![tokio](https://img.shields.io/badge/Tokio-1.x-000000)](https://tokio.rs/)
+[![mlua](https://img.shields.io/badge/mlua-0.10-6E4C13)](https://github.com/mlua-rs/mlua)
+[![tree sitter](https://img.shields.io/badge/tree--sitter-0.25-2D6CDF)](https://tree-sitter.github.io/tree-sitter/)
+[![ollama](https://img.shields.io/badge/Ollama-local%20LLM-000000)](https://ollama.com/)
+[![qdrant](https://img.shields.io/badge/Qdrant-vector%20DB-FF4E00)](https://qdrant.tech/)
+[![ratatui](https://img.shields.io/badge/ratatui-0.29-5E2B97)](https://ratatui.rs/)
 
-Template for task: Репозиторий для работы
+Сервис генерации Lua-кода по описанию на естественном языке с интерактивным подтверждением плана/кода и многоуровневой валидацией в изолированной песочнице.
 
-## Getting started
+Ключевая идея: пользователь формулирует задачу → сервис генерирует план → пользователь подтверждает/правит план → сервис генерирует Lua-код → код проходит sandbox-валидацию и LLM-ревью → пользователь подтверждает/правит результат.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Проект создан для True Tech Hack 2026.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Содержание
 
-## Add your files
+- [Возможности](#возможности)
+- [Компоненты](#компоненты)
+- [Архитектура](#архитектура)
+- [Быстрый старт (Docker Compose)](#быстрый-старт-docker-compose)
+- [Запуск TUI (Docker Compose)](#запуск-tui-docker-compose)
+- [HTTP API](#http-api)
+  - [GET /health](#get-health)
+  - [POST /generate](#post-generate)
+  - [Примеры curl](#примеры-curl)
+- [Контекст в задаче (JSON)](#контекст-в-задаче-json)
+- [Конфигурация](#конфигурация)
+- [Операционные заметки](#операционные-заметки)
+- [Структура репозитория](#структура-репозитория)
+- [Локальная разработка (без Docker)](#локальная-разработка-без-docker)
+- [Лицензия](#лицензия)
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+## Возможности
 
+- Session-based state machine с ручным подтверждением плана и кода (см. `llm-service/app/main.py`).
+- Авто-исправления после ошибок песочницы (повторная генерация кода с фидбэком от валидатора).
+- Многоуровневая безопасность исполнения Lua:
+  - статические проверки (опасные текстовые паттерны и запрещённые вызовы на уровне AST),
+  - runtime sandbox (ограничение памяти, таймаут, отключение доступа к `os/io/package/debug/coroutine`, перехват `print/warn`).
+- Опциональный RAG-контекст для критика через Qdrant + embeddings-сервис (если недоступно — шаг пропускается).
+- Терминальный клиент `llm-tui` для интерактивного диалога с сервисом.
+
+## Компоненты
+
+Состав репозитория и роль сервисов:
+
+- `llm-service` (FastAPI, порт `8080`) — HTTP API и state machine сессий, оркестрация генерации/валидации.
+- `sandbox-service` (Rust, порт `6778`) — статическая и runtime-валидация Lua-кода (включая ограничения окружения исполнения).
+- `ollama` (порт `11434`) — локальный LLM-сервер для генерации и критика.
+- `qdrant` (порт `6333`) — векторная БД для RAG (опционально; используется для подсказок/политик в критике).
+- `llm-tui` — терминальный клиент для интерактивной работы с `llm-service`.
+
+## Архитектура
+
+Высокоуровневый поток:
+
+1) Клиент (curl/TUI) отправляет задачу в `llm-service` (`POST /generate`).
+2) `llm-service` генерирует план → возвращает план пользователю на подтверждение.
+3) После подтверждения плана `llm-service` генерирует Lua-код и отправляет его в `sandbox-service` на валидацию/исполнение.
+4) При включённом `llm_validation` код дополнительно проходит LLM-критика; затем возвращается пользователю на финальное подтверждение.
+
+Инварианты и ограничения:
+
+- `llm-service` хранит сессии в памяти процесса (без внешнего стореджа).
+- `sandbox-service` является источником истины по безопасности исполнения (проверки + sandbox runtime).
+
+## Быстрый старт (Docker Compose)
+
+Требования:
+
+- Docker 20.10+
+- Docker Compose v2+
+- Достаточно места под модель (первый запуск скачает LLM-модель через `ollama-init`)
+
+Запуск всего стека (сборка локально и старт контейнеров):
+
+```bash
+docker compose up --build
 ```
-cd existing_repo
-git remote add origin https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/template.git
-git branch -M main
-git push -uf origin main
+
+Проверка готовности API:
+
+```bash
+curl -s http://localhost:8080/health
 ```
 
-## Integrate with your tools
+Полезные порты (по умолчанию):
 
-- [ ] [Set up project integrations](https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/template/-/settings/integrations)
+- `http://localhost:8080` — `llm-service`
+- `http://localhost:6778` — `sandbox-service`
+- `http://localhost:11434` — `ollama`
+- `http://localhost:6333` — `qdrant`
 
-## Collaborate with your team
+Остановка:
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+```bash
+docker compose down
+```
 
-## Test and Deploy
+## Запуск TUI (Docker Compose)
 
-Use the built-in continuous integration in GitLab.
+TUI запускается отдельной командой поверх уже поднятого стека.
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+1) Собрать и поднять сервисы:
 
-***
+```bash
+docker compose up --build
+```
 
-# Editing this README
+2) В другом терминале запустить TUI:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+```bash
+docker compose run --rm --no-deps -it llm-tui
+```
 
-## Suggestions for a good README
+Переменная `LLM_SERVICE_URL` внутри контейнера TUI уже настроена на `http://llm-service:8080` (см. `docker-compose.yml`).
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+## HTTP API
 
-## Name
-Choose a self-explaining name for your project.
+Базовый URL: `http://localhost:8080`.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+### GET /health
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+Health endpoint `llm-service`.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Пример:
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+```bash
+curl -s http://localhost:8080/health
+```
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### POST /generate
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+Единственный основной endpoint. Реализует session-based state machine. Запросы делаются последовательно, используя один и тот же `session_id`.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Request (JSON):
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```json
+{
+  "session_id": "uuid (опционально)",
+  "task": "описание задачи (обязательно только при создании новой сессии)",
+  "user_response": "\"Подтвердить\" или текст правок",
+  "llm_validation": true
+}
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Поля:
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+- `session_id` — если не указан, создаётся новая сессия и возвращается в ответе.
+- `task` — обязателен для новой сессии; для продолжения сессии можно не передавать.
+- `user_response`:
+  - на этапе плана: `"Подтвердить"` подтверждает план; любой другой текст считается правками и приводит к пересборке плана;
+  - на этапе кода: `"Подтвердить"` завершает сессию; любой другой текст считается правками и приводит к пересборке кода.
+- `llm_validation` — включает/выключает LLM-критика после sandbox-проверки (по умолчанию `true`).
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Response (JSON):
 
-## License
-For open source projects, say how it is licensed.
+```json
+{
+  "session_id": "uuid",
+  "state": "awaiting_plan_confirmation | awaiting_code_approval | done",
+  "plan": "строка (опционально)",
+  "code": "строка (опционально)",
+  "sandbox_feedback": "строка (опционально)",
+  "message": "текстовое пояснение"
+}
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Состояния:
+
+- `awaiting_plan_confirmation` — вернулся план, ждём подтверждение/правки.
+- `awaiting_code_approval` — вернулся код (и результаты проверок), ждём подтверждение/правки.
+- `done` — код одобрен; повторные вызовы вернут финальный код для этого `session_id`.
+
+### Примеры curl
+
+1) Создать новую сессию и получить план:
+
+```bash
+curl -sS -X POST http://localhost:8080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"task":"Напиши Lua-функцию, которая принимает таблицу data и возвращает новую таблицу только с ключами id, name, email."}'
+```
+
+2) Уточнить/поправить план (тот же `session_id`):
+
+```bash
+curl -sS -X POST http://localhost:8080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"<session_id>","user_response":"Добавь обработку отсутствующих ключей и не меняй входную таблицу."}'
+```
+
+3) Подтвердить план и получить код:
+
+```bash
+curl -sS -X POST http://localhost:8080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"<session_id>","user_response":"Подтвердить"}'
+```
+
+4) Попросить правки к коду:
+
+```bash
+curl -sS -X POST http://localhost:8080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"<session_id>","user_response":"Сделай функцию чистой (без побочных эффектов) и добавь комментарии к публичным функциям."}'
+```
+
+5) Финально подтвердить код (переводит сессию в `done`):
+
+```bash
+curl -sS -X POST http://localhost:8080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"<session_id>","user_response":"Подтвердить"}'
+```
+
+Опционально: выключить LLM-критика (полезно для диагностики/ускорения):
+
+```bash
+curl -sS -X POST http://localhost:8080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"<session_id>","user_response":"Подтвердить","llm_validation":false}'
+```
+
+## Контекст в задаче (JSON)
+
+В `task` можно вложить JSON-контекст workflow. `llm-service` извлечёт JSON из текста, распарсит его и передаст в `sandbox-service` как таблицу `wf`.
+
+Пример:
+
+```text
+Очисти значения переменных ID, ENTITY_ID, CALL, оставив только их.
+
+{
+  "wf": {
+    "vars": {
+      "RESTbody": {
+        "result": [
+          {"ID": 123, "ENTITY_ID": 456, "CALL": "call_1", "EXTRA": "remove_me"}
+        ]
+      }
+    },
+    "initVariables": {}
+  }
+}
+```
+
+## Конфигурация
+
+`llm-service` читает переменные окружения (см. `llm-service/app/config.py`). Пример набора переменных: `llm-service/.env.example`.
+
+Docker Compose задаёт минимум, остальное можно передать через `.env` рядом с `docker-compose.yml` или через `environment`.
+
+Ключевые переменные:
+
+- `GENERATION_MODEL` — модель Ollama для генерации (по умолчанию `qwen2.5-coder:7b`)
+- `OLLAMA_URL` — URL Ollama (по умолчанию `http://ollama:11434`)
+- `SANDBOX_SERVICE_URL` — URL sandbox (по умолчанию `http://sandbox-service:6778`)
+- `CONFIRM_WORD` — ключевое слово «ОК» от критика (по умолчанию `CODE_OK`)
+- `CODE_RETRIES_SANDBOX` — количество авто-попыток починки кода после ошибки песочницы (по умолчанию `20`)
+- `QDRANT_URL`, `QDRANT_COLLECTION` — RAG-хранилище (опционально)
+- `EMBEDDINGS_URL`, `EMBEDDING_MODEL` — сервис эмбеддингов для RAG (опционально; при недоступности RAG будет silently skipped)
+
+## Операционные заметки
+
+- Сессии `llm-service` хранятся в памяти процесса: при рестарте контейнера активные сессии теряются.
+- `sandbox-service` запускается с `privileged: true` (см. `docker-compose.yml`). Не публикуйте sandbox наружу без отдельной оценки рисков и сетевых политик.
+- Первый запуск может занять время из-за скачивания модели Ollama (`ollama-init`). Повторные старты используют volume `ollama_data`.
+- Хранилище Qdrant примонтировано как bind-mount `./qdrant_data` (данные сохраняются между перезапусками).
+
+## Структура репозитория
+
+```text
+.
+├── docker-compose.yml
+├── llm-service/         # FastAPI оркестратор (HTTP API, state machine)
+├── sandbox-service/     # Rust sandbox (валидация/исполнение Lua)
+├── llm-tui/             # Rust TUI клиент
+└── docs/                # дополнительная документация (например C4)
+```
+
+## Локальная разработка (без Docker)
+
+`llm-service` (нужны запущенные `ollama` и `sandbox-service`):
+
+```bash
+cd llm-service
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+OLLAMA_URL=http://localhost:11434 \
+SANDBOX_SERVICE_URL=http://localhost:6778 \
+uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+`llm-tui`:
+
+```bash
+cd llm-tui
+LLM_SERVICE_URL=http://localhost:8080 cargo run
+```
+
+## Лицензия
+
+Отдельный файл лицензии в репозитории не задан. Проект создан в рамках True Tech Hack 2026.
