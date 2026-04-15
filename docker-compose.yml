@@ -101,6 +101,7 @@ services:
       
     volumes:
       - ./exports:/app/exports
+      - ./llm-service/app/parse_lua_to_json.py:/app/parse_lua_to_json.py:ro
     
     privileged: true
     environment:

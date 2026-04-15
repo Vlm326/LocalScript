@@ -392,19 +392,72 @@ impl App {
             }
         }
 
-        let path = PathBuf::from("/app/exports/llm_last_code.lua");
+        let lua_path = PathBuf::from("/app/exports/llm_last_code.lua");
+        let json_path = PathBuf::from("/app/exports/llm_last_code.json");
         let content = ensure_trailing_newline(&code);
 
-        match std::fs::write(&path, content) {
+        match std::fs::write(&lua_path, content.clone()) {
             Ok(()) => self.messages.push(ChatMessage::System(format!(
                 "💾 Код сохранён в файл: {}",
-                path.display()
+                lua_path.display()
             ))),
             Err(e) => self.messages.push(ChatMessage::Error(format!(
                 "Не удалось сохранить файл {}: {}",
-                path.display(),
+                lua_path.display(),
                 e
             ))),
+        }
+
+        self.export_via_parser(&code, &json_path);
+    }
+
+    fn export_via_parser(&mut self, _code: &str, json_path: &PathBuf) {
+        let parser_script = PathBuf::from("/app/parse_lua_to_json.py");
+        if !parser_script.exists() {
+            self.messages.push(ChatMessage::Error(
+                "⚠️ Скрипт parse_lua_to_json.py не найден".to_string(),
+            ));
+            return;
+        }
+
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(format!(
+                "import sys; sys.path.insert(0, '/app'); from parse_lua_to_json import parse_lua_to_json; print(parse_lua_to_json(sys.stdin.read()))"
+            ))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    let json_content = String::from_utf8_lossy(&output.stdout);
+                    match std::fs::write(json_path, json_content.as_ref()) {
+                        Ok(()) => self.messages.push(ChatMessage::System(format!(
+                            "📄 JSON сохранён в файл: {}",
+                            json_path.display()
+                        ))),
+                        Err(e) => self.messages.push(ChatMessage::Error(format!(
+                            "⚠️ Не удалось сохранить JSON: {}",
+                            e
+                        ))),
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    self.messages.push(ChatMessage::Error(format!(
+                        "⚠️ Ошибка парсера: {}",
+                        stderr
+                    )));
+                }
+            }
+            Err(e) => {
+                self.messages.push(ChatMessage::Error(format!(
+                    "⚠️ Не удалось запустить парсер: {}",
+                    e
+                )));
+            }
         }
     }
 
