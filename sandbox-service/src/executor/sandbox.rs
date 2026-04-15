@@ -251,7 +251,7 @@ pub async fn execute_lua_code(
             },
         );
 
-        let _ = tx.try_send(format!("[exec] code size: {} bytes", code.len()));
+        let _ = tx.try_send(format!("[exec] code: {} bytes", code));
 
         match lua.load(&code).eval::<MultiValue>() {
             Ok(values) => {
