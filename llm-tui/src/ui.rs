@@ -340,7 +340,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(" │ "),
             Span::styled(
-                "F3 Export │ F4 Reset │ Esc/Ctrl+Q Exit",
+                "F3 Export (with json formating)ё │ F4 Reset │ Esc/Ctrl+Q Exit",
                 Style::default().fg(Color::DarkGray),
             ),
         ])
