@@ -1,9 +1,4 @@
-# LuaForge AI
-
-[![pipeline status](https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/710/task-repo/-/badges/main/pipeline.svg)](https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/710/task-repo/-/pipelines)
-[![coverage report](https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/710/task-repo/-/badges/main/coverage.svg)](https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/710/task-repo/-/graphs/main/charts)
-[![latest release](https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/710/task-repo/-/badges/release.svg)](https://git.truetecharena.ru/tta/true-tech-hack2026-localscript/710/task-repo/-/releases)
-
+# LocalScript
 [![docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![docker compose](https://img.shields.io/badge/Docker%20Compose-v2-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)

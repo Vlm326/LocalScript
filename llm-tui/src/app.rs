@@ -379,7 +379,6 @@ impl App {
             return;
         };
 
-        // Clipboard often fails in Docker/headless environments; treat it as best-effort.
         match self.copy_last_code() {
             Ok(()) => {
                 self.messages
@@ -427,7 +426,6 @@ fn ensure_trailing_newline(s: &str) -> String {
 }
 
 fn sanitize_paste(text: &str) -> String {
-    // Input UI is effectively single-line; keep paste predictable.
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {

@@ -65,8 +65,6 @@ pub async fn handle_pipeline(Json(payload): Json<PipelineRequest>) -> Json<Pipel
         context_present = payload.context.is_some(),
         "pipeline: request_started"
     );
-    // User requested full code visibility in logs.
-    // This can be noisy, but makes sandbox the single source of truth for what was executed/validated.
     info!(rid, "pipeline: code\n{}", payload.code);
 
     if payload

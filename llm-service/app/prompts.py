@@ -1,4 +1,5 @@
 from config import CONFIRM_WORD
+import json
 
 # нил, lowcode
 
@@ -86,12 +87,13 @@ a
 # ─── Вспомогательные функции для сборки messages ───────────────────────────
 
 
-def build_architect_messages(task: str) -> list:
+def build_architect_messages(task: str, context: dict | None = None) -> list:
     """Сформировать messages для этапа планирования."""
-    return [
-        {"role": "system", "content": SYSTEM_ARCHITECT},
-        {"role": "user", "content": task},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_ARCHITECT}]
+    if context is not None:
+        messages.append({"role": "system", "content": _format_context_block(context)})
+    messages.append({"role": "user", "content": task})
+    return messages
 
 
 def build_coder_messages(
@@ -100,11 +102,20 @@ def build_coder_messages(
     rag_data: str = "",
     previous_code: str = "",
     critic_feedback: str = "",
+    context: dict | None = None,
 ) -> list:
     """Сформировать messages для этапа генерации / исправления кода."""
     messages = [
         {"role": "system", "content": SYSTEM_CODER},
     ]
+
+    if context is not None:
+        messages.append(
+            {
+                "role": "system",
+                "content": _format_context_block(context),
+            }
+        )
 
     if rag_data:
         messages.append({"role": "system", "content": f"Reference data:\n{rag_data}"})
@@ -135,14 +146,50 @@ def build_coder_messages(
     return messages
 
 
+def _format_context_block(context: dict, max_chars: int = 4000) -> str:
+    """
+    Форматирует контекст для LLM как короткую, полезную подсказку.
+    Важно: не раздувать промпт — контекст может быть большим.
+    """
+    try:
+        wf = context.get("wf") if isinstance(context.get("wf"), dict) else {}
+        vars_obj = wf.get("vars") if isinstance(wf.get("vars"), dict) else {}
+        init_obj = (
+            wf.get("initVariables")
+            if isinstance(wf.get("initVariables"), dict)
+            else {}
+        )
+
+        vars_keys = list(vars_obj.keys())[:100]
+        init_keys = list(init_obj.keys())[:100]
+
+        raw = json.dumps(context, ensure_ascii=False, default=str)
+        preview = raw[:max_chars]
+        truncated = len(raw) > len(preview)
+
+        return (
+            "Workflow context is available as global table `wf`.\n"
+            f"wf.vars keys: {vars_keys}\n"
+            f"wf.initVariables keys: {init_keys}\n"
+            "Context JSON (truncated):\n"
+            f"{preview}\n"
+            f"(truncated={truncated})"
+        )
+    except Exception:
+        return "Workflow context is available as global table `wf`."
+
+
 def build_critic_messages(
         code: str,
         rag_data: str = "",
+        context: dict | None = None,
                           ) -> list:
     """Сформировать messages для валидации кода."""
     messages = [
         {"role": "system", "content": SYSTEM_CRITIC},
     ]
+    if context is not None:
+        messages.append({"role": "system", "content": _format_context_block(context)})
     if rag_data:
         messages.append({"role": "system", "content": f"Reference data:\n{rag_data}"})
     messages.append({"role": "user", "content": f"Review this Lua code:\n\n{code}"})

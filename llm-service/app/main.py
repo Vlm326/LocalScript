@@ -1,5 +1,6 @@
 import time
 import uuid
+import json
 from enum import Enum
 from typing import Optional
 from rag_func import build_rag_context
@@ -51,7 +52,7 @@ class SessionData:
     def __init__(self, task: str):
         self.state = SessionState.GENERATING_PLAN
         self.user_task = task
-        self.context = None
+        self.context = {"wf": {"vars": {}, "initVariables": {}}}
         self.plan = ""
         self.plan_revision_count = 0
         self.current_code = ""
@@ -90,6 +91,84 @@ class GenerateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _context_log_payload(context, max_chars: int = 4000) -> dict:
+    """
+    Best-effort context logger payload.
+
+    Goal: make it obvious in logs which variables were provided, without
+    accidentally dumping huge payloads or failing request handling.
+    """
+    try:
+        if context is None:
+            return {"ctx_present": False}
+
+        wf = None
+        if isinstance(context, dict) and isinstance(context.get("wf"), dict):
+            wf = context.get("wf")
+
+        wf_vars_keys = None
+        wf_init_keys = None
+        wf_vars_summary = None
+
+        def _summarize_value(value, max_keys: int = 20):
+            if isinstance(value, dict):
+                keys = list(value.keys())
+                return {"type": "object", "keys_total": len(keys), "keys": keys[:max_keys]}
+            if isinstance(value, list):
+                return {"type": "array", "len": len(value)}
+            if isinstance(value, str):
+                return {"type": "string", "len": len(value)}
+            if value is None:
+                return {"type": "null"}
+            return {"type": type(value).__name__}
+
+        if wf is not None:
+            vars_obj = wf.get("vars")
+            init_obj = wf.get("initVariables")
+            if isinstance(vars_obj, dict):
+                wf_vars_keys = list(vars_obj.keys())
+                wf_vars_summary = {k: _summarize_value(vars_obj.get(k)) for k in wf_vars_keys[:50]}
+            if isinstance(init_obj, dict):
+                wf_init_keys = list(init_obj.keys())
+
+        try:
+            raw = json.dumps(context, ensure_ascii=False, default=str)
+        except Exception:
+            raw = str(context)
+
+        preview = raw[:max_chars]
+        return {
+            "ctx_present": True,
+            "ctx_type": type(context).__name__,
+            "ctx_len": len(raw),
+            "ctx_preview": preview,
+            "ctx_truncated": len(raw) > len(preview),
+            "wf_vars_keys": wf_vars_keys,
+            "wf_init_keys": wf_init_keys,
+            "wf_vars_summary": wf_vars_summary,
+        }
+    except Exception:
+        return {"ctx_present": True, "ctx_log_error": True}
+
+
+def _print_context_details(tag: str, context) -> None:
+    """Extra explicit context printing (vars + shapes), for debugging visibility."""
+    try:
+        payload = _context_log_payload(context, max_chars=8000)
+        if not payload.get("ctx_present"):
+            print(f"[{tag}] ctx: <none>")
+            return
+
+        print(
+            f"[{tag}] ctx: wf.vars keys={payload.get('wf_vars_keys')}, wf.initVariables keys={payload.get('wf_init_keys')}"
+        )
+        summary = payload.get("wf_vars_summary") or {}
+        for k, v in summary.items():
+            print(f"[{tag}] ctx var {k}: {v}")
+    except Exception:
+        return
+
+
 def _get_or_create_session(req: GenerateRequest) -> tuple[str, SessionData, bool]:
     """Return (session_id, session, is_new)."""
     if req.session_id and req.session_id in sessions:
@@ -130,15 +209,18 @@ async def validate_code(
     context,
 ):
     """Validate code in sandbox with retry loop."""
+    validate_log = {
+        "retries": count_of_retries,
+        "plan": len(plan or ""),
+        "task": len(user_task or ""),
+        "code": len(current_code or ""),
+    }
+    validate_log.update(_context_log_payload(context))
     print(
         "[validate] start",
-        {
-            "retries": count_of_retries,
-            "plan": len(plan or ""),
-            "task": len(user_task or ""),
-            "code": len(current_code or ""),
-        },
+        validate_log,
     )
+    _print_context_details("validate", context)
     sandbox_resp = await send_code_for_validation(current_code, context)
     sandbox_feedback = extract_validation_feedback(sandbox_resp)
     print(
@@ -170,6 +252,7 @@ async def validate_code(
                 user_task,
                 previous_code=current_code,
                 critic_feedback=f"Ошибка песочницы: {sandbox_feedback}",
+                context=context,
             )
             raw_fixed = _strip_code_block(fixed_code)
             current_code = raw_fixed
@@ -225,7 +308,7 @@ async def _handle_plan_generation(session: SessionData) -> GenerateResponse:
             "task": len(session.user_task or ""),
         },
     )
-    plan = await pipeline._generate_plan(session.user_task)
+    plan = await pipeline._generate_plan(session.user_task, context=session.context)
     session.plan = plan
     session.state = SessionState.AWAITING_PLAN_CONFIRMATION
     print(
@@ -258,6 +341,7 @@ async def _handle_plan_revision(
     )
     refined_plan = await pipeline._generate_plan(
         f"Предыдущий план:\n{session.plan}\n\nИсправления от пользователя:\n{user_feedback}\n\nОбнови план с учётом исправлений.",
+        context=session.context,
     )
     session.plan = refined_plan
     session.state = SessionState.AWAITING_PLAN_CONFIRMATION
@@ -291,7 +375,12 @@ async def _handle_code_generation(
             "llm": llm_validation,
         },
     )
-    code = await pipeline._generate_code(session.plan, session.user_task)
+    code = await pipeline._generate_code(
+        session.plan,
+        session.user_task,
+        rag_data=session.rag_context,
+        context=session.context,
+    )
     raw_code = _strip_code_block(code)
     session.current_code = raw_code
     session.code_revision_count = 0
@@ -334,7 +423,11 @@ async def _handle_code_generation(
     # --- Pass 2: Ollama critic (logic, security, performance) ---
     critic_result = ""
     if llm_validation:
-        critic_result = await pipeline._critique_code(session.current_code, rag_data=session.rag_context)
+        critic_result = await pipeline._critique_code(
+            session.current_code,
+            rag_data=session.rag_context,
+            context=session.context,
+        )
         print(
             "[code] critic",
             {
@@ -391,8 +484,10 @@ async def _handle_code_revision(
     revised_code = await pipeline._generate_code(
         session.plan,
         session.user_task,
+        rag_data=session.rag_context,
         previous_code=session.current_code,
         critic_feedback=f"Замечания пользователя:\n{user_feedback}",
+        context=session.context,
     )
     raw_revised = _strip_code_block(revised_code)
     session.current_code = raw_revised
@@ -444,7 +539,11 @@ async def _handle_code_revision(
 
     critic_result = ""
     if llm_validation:
-        critic_result = await pipeline._critique_code(session.current_code, rag_data=session.rag_context)
+        critic_result = await pipeline._critique_code(
+            session.current_code,
+            rag_data=session.rag_context,
+            context=session.context,
+        )
         print(
             "[code] critic",
             {
@@ -489,49 +588,68 @@ async def _handle_code_revision(
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(req: GenerateRequest):
     sid, session, is_new = _get_or_create_session(req)
+    req_log = {
+        "sid": sid,
+        "is_new": is_new,
+        "state": session.state,
+        "task": len(req.task or ""),
+        "resp": len(req.user_response or ""),
+        "llm": req.llm_validation,
+    }
+    req_log.update(_context_log_payload(session.context))
     print(
         "[req]",
-        {
-            "sid": sid,
-            "is_new": is_new,
-            "state": session.state,
-            "task": len(req.task or ""),
-            "resp": len(req.user_response or ""),
-            "llm": req.llm_validation,
-        },
+        req_log,
     )
 
-    if is_new:
+    if (not is_new) and req.task and req.task.strip():
         try:
             clean_task, context = extract_context_and_clean_task(req.task)
-            session.user_task = req.task
-            session.context = context
-            print(
-                "[req] parsed",
-                {
-                    "raw": len(req.task or ""),
-                    "clean": len(clean_task or ""),
-                    "ctx": list(context.keys()) if isinstance(context, dict) else None,
-                },
-            )
-        except ParseError as e:
-            session.user_task = req.task  # fallback to raw task
-            session.context = {"wf": {"vars": {}, "initVariables": {}}}
-            print(
-                "[req] parse_fail",
-                {
-                    "err": str(e),
-                    "task": len(req.task or ""),
-                },
+
+            has_real_context = (
+                isinstance(context, dict)
+                and isinstance(context.get("wf"), dict)
+                and (
+                    context["wf"].get("vars") or
+                    context["wf"].get("initVariables")
+                )
             )
 
+            if has_real_context:
+                session.context = context
+                print("[req] ctx_updated (NEW CONTEXT DETECTED)")
+            else:
+                print("[req] ctx_ignored (NO REAL CONTEXT)")
+
+            if clean_task and clean_task.strip():
+                session.user_task = clean_task
+
+        except ParseError:
+            print("[req] ctx_parse_failed -> keeping old context")
+
+    list_of_good_responses = [
+        "подтвердить",
+        "да",
+        "согласен",
+        "утверждаю",
+        "approve",
+        "confirm",
+        "yes",
+        "ok",
+        "хорошо",
+        "принять",
+        "ок",
+        "78",
+        "67",
+        "docker",
+        "борзячка"
+    ]
     # ── First call: generate plan ──────────────────────────────────────
     if session.state == SessionState.GENERATING_PLAN:
         result = await _handle_plan_generation(session)
-
     # ── User is confirming / revising the plan ────────────────────────
     elif session.state == SessionState.AWAITING_PLAN_CONFIRMATION:
-        if req.user_response.strip().lower() == "подтвердить":
+        if req.user_response.strip().lower() in list_of_good_responses:
             session.rag_context = await build_rag_context(session.plan)
             result = await _handle_code_generation(session, req.llm_validation)
         else:

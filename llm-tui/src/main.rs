@@ -122,7 +122,6 @@ fn spawn_input_reader(
     event_tx: mpsc::Sender<AppEvent>,
     shutdown: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    // Use poll with a timeout so we can exit cleanly on shutdown without leaving raw mode behind.
     tokio::task::spawn_blocking(move || {
         while !shutdown.load(Ordering::Relaxed) {
             match event::poll(std::time::Duration::from_millis(100)) {
