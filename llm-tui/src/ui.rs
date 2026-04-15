@@ -186,8 +186,8 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match &app.state {
             TuiState::EnterTask => "Введите задачу для начала работы",
-            TuiState::AwaitingPlan => "Напишите фидбек или «Подтвердить»",
-            TuiState::AwaitingCode => "Напишите фидбек или «Подтвердить»",
+            TuiState::AwaitingPlan => "Напишите фидбек или «Подтвердить/Ок»",
+            TuiState::AwaitingCode => "Напишите фидбек или «Подтвердить/Ок»",
             TuiState::Done => "F3 — скопировать код, F4 — новая задача",
             TuiState::Error(_) => "Произошла ошибка. F4 — сброс",
         }
