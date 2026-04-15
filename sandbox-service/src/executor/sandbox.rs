@@ -89,7 +89,6 @@ fn extract_snippet(code: &str, error_line: u32) -> String {
         return String::new();
     }
 
-    // clamp error_line в допустимый диапазон
     let center = error_line.saturating_sub(1).min(total as u32 - 1) as usize;
 
     let start = center.saturating_sub(2);
@@ -149,9 +148,6 @@ fn inject_wf_context(lua: &Lua, context: &JsonValue) -> mlua::Result<()> {
     let globals = lua.globals();
     let wf = lua.create_table()?;
 
-    // Поддержка двух форматов:
-    // Формат A: {"wf": {"vars": {...}, "initVariables": {...}}}
-    // Формат B: {"vars": {...}, "initVariables": {...}}
     let inner = if let Some(wf_obj) = context.get("wf") {
         wf_obj
     } else {

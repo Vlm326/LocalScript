@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    Frame,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -165,7 +165,6 @@ fn render_history(frame: &mut Frame, app: &App, area: Rect) {
     let view_height = area.height.saturating_sub(2) as usize;
     let max_scroll = lines.len().saturating_sub(view_height) as u16;
 
-    // app.scroll_offset is "lines from bottom"; Paragraph::scroll is "lines from top"
     let back = app.scroll_offset.min(max_scroll);
     let scroll_top = max_scroll.saturating_sub(back);
 
@@ -206,7 +205,9 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}", state_label_text),
-            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(state_color)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -317,7 +318,10 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" │ "),
-            Span::styled(format!("session: {}", sid), Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("session: {}", sid),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(" │ "),
             Span::styled("Generating response...", Style::default().fg(Color::Yellow)),
         ])
@@ -330,7 +334,10 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" │ "),
-            Span::styled(format!("session: {}", sid), Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("session: {}", sid),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(" │ "),
             Span::styled(
                 "F3 Export │ F4 Reset │ Esc/Ctrl+Q Exit",
