@@ -306,7 +306,3 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 cd llm-tui
 LLM_SERVICE_URL=http://localhost:8080 cargo run
 ```
-
-## Лицензия
-
-Отдельный файл лицензии в репозитории не задан. Проект создан в рамках True Tech Hack 2026.
