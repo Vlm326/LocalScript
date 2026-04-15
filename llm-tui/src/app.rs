@@ -408,56 +408,16 @@ impl App {
             ))),
         }
 
-        self.export_via_parser(&code, &json_path);
-    }
-
-    fn export_via_parser(&mut self, _code: &str, json_path: &PathBuf) {
-        let parser_script = PathBuf::from("/app/parse_lua_to_json.py");
-        if !parser_script.exists() {
-            self.messages.push(ChatMessage::Error(
-                "⚠️ Скрипт parse_lua_to_json.py не найден".to_string(),
-            ));
-            return;
-        }
-
-        let output = std::process::Command::new("python3")
-            .arg("-c")
-            .arg(format!(
-                "import sys; sys.path.insert(0, '/app'); from parse_lua_to_json import parse_lua_to_json; print(parse_lua_to_json(sys.stdin.read()))"
-            ))
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
-
-        match output {
-            Ok(output) => {
-                if output.status.success() {
-                    let json_content = String::from_utf8_lossy(&output.stdout);
-                    match std::fs::write(json_path, json_content.as_ref()) {
-                        Ok(()) => self.messages.push(ChatMessage::System(format!(
-                            "📄 JSON сохранён в файл: {}",
-                            json_path.display()
-                        ))),
-                        Err(e) => self.messages.push(ChatMessage::Error(format!(
-                            "⚠️ Не удалось сохранить JSON: {}",
-                            e
-                        ))),
-                    }
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    self.messages.push(ChatMessage::Error(format!(
-                        "⚠️ Ошибка парсера: {}",
-                        stderr
-                    )));
-                }
-            }
-            Err(e) => {
-                self.messages.push(ChatMessage::Error(format!(
-                    "⚠️ Не удалось запустить парсер: {}",
-                    e
-                )));
-            }
+        let json_content = parse_lua_to_json(&code);
+        match std::fs::write(&json_path, json_content) {
+            Ok(()) => self.messages.push(ChatMessage::System(format!(
+                "📄 JSON сохранён в файл: {}",
+                json_path.display()
+            ))),
+            Err(e) => self.messages.push(ChatMessage::Error(format!(
+                "⚠️ Не удалось сохранить JSON: {}",
+                e
+            ))),
         }
     }
 
@@ -549,4 +509,30 @@ pub async fn execute_api_request(req: ApiRequest) -> ApiResult {
             error: error.to_string(),
         },
     }
+}
+
+fn replace_indentation(line: &str) -> String {
+    let leading_spaces = line.len() - line.trim_start().len();
+    if leading_spaces == 0 {
+        return line.to_string();
+    }
+
+    let tabs = leading_spaces / 4;
+    let remainder = leading_spaces % 4;
+    let new_prefix = "\t".repeat(tabs) + " ".repeat(remainder).as_str();
+    format!("{}{}", new_prefix, line.trim_start())
+}
+
+fn parse_lua_to_json(lua_code: &str) -> String {
+    let lines: Vec<&str> = lua_code.lines().collect();
+    let processed_lines: Vec<String> = lines.iter().map(|line| replace_indentation(line)).collect();
+
+    let normalized_code = "\n".to_string() + processed_lines.join("\n").as_str() + "\n";
+    let content = format!("lua{{{}}}lua", normalized_code);
+
+    let data = serde_json::json!({
+        "result": content
+    });
+
+    serde_json::to_string(&data).unwrap_or_else(|_| format!(r#"{{"result": "{}"}}"#, content))
 }
