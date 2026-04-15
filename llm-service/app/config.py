@@ -17,8 +17,5 @@ PORT = int(os.getenv("PORT", "8080"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 QDRANT_URL = os.getenv("QDRANT_URL", "https://qdrant:6333")
 SANDBOX_SERVICE_URL = os.getenv("SANDBOX_SERVICE_URL", "http://sandbox-service:6778")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "lua_patterns")
-EMBEDDINGS_URL = os.getenv("EMBEDDINGS_URL", "http://embeddings:8000/v1/embeddings")
 
 LIMIT_FOR_RAG_DOCS = 1
