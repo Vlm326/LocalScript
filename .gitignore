@@ -3,7 +3,7 @@
 **/*.rs.bk
 *.pdb
 Cargo.lock
-
+:x
 # Ollama / AI models
 data/ollama/
 *.gguf
@@ -34,3 +34,4 @@ exports/
 
 .qwen
 .vscode
+.codex
